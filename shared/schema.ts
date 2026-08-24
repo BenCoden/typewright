@@ -133,8 +133,23 @@ export const settings = sqliteTable('settings', {
   typeface: text('typeface').notNull().default('serif'),
 
   /* --- Typing mode --------------------------------------------------- */
+  /**
+   * How a mistake is handled:
+   *   block — the cursor holds until you type the right character
+   *   mark  — the mistake is marked and the cursor moves on
+   *   fix   — the mistake is counted, then corrected for you so you keep flowing
+   */
+  mistakeMode: text('mistake_mode').notNull().default('block'),
+  /** auto — move on when a block is finished; confirm — wait for Enter. */
+  advanceMode: text('advance_mode').notNull().default('auto'),
+  /** Accept the wrong case in prose. Listings always compare exactly. */
+  ignoreCaseProse: integer('ignore_case_prose').notNull().default(0),
+  /** Show the ⏎ marker at the end of each line inside a listing. */
+  showNewlines: integer('show_newlines').notNull().default(1),
   /** line | block | underline — shape of the active-position caret. */
   caretStyle: text('caret_style').notNull().default('line'),
+  /** Blink the caret, or hold it steady. */
+  caretBlink: integer('caret_blink').notNull().default(1),
   /** Holds the active line at a fixed spot on screen instead of free scroll. */
   keepInPosition: integer('keep_in_position').notNull().default(0),
   /** Underline the whole word on a mistake, not just the missed character. */

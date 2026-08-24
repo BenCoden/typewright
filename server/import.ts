@@ -170,6 +170,50 @@ export function normalizeCode(input: string): string {
  * ------------------------------------------------------------------ */
 
 /**
+ * Abbreviations whose trailing period never ends a sentence. Without this,
+ * "e.g. Foo" and "Fig. 2" break mid-thought.
+ */
+const ABBREVIATIONS = new Set([
+  'mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'st',
+  'fig', 'eq', 'ch', 'sec', 'no', 'vol', 'pp', 'ed',
+  'inc', 'ltd', 'co', 'corp', 'vs', 'cf', 'al', 'etc',
+  'e.g', 'i.e', 'approx',
+]);
+
+/**
+ * Splits a paragraph at sentence boundaries.
+ *
+ * A boundary needs a terminator, then whitespace, then something that can open
+ * a sentence. Requiring the whitespace is what keeps ".NET", "Node.js", and
+ * "3.5" intact — in those the period is followed immediately by a character, so
+ * no boundary exists.
+ */
+function splitSentences(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+
+  const boundary = /([.!?]+["'”’)\]]*)(\s+)(?=["'“‘(\[]?[A-Z0-9])/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = boundary.exec(text)) !== null) {
+    const end = match.index + match[1].length;
+
+    // "…according to Fig. 2" is one sentence, not two.
+    const preceding = text.slice(start, match.index).match(/([\w.]+)$/)?.[1] ?? '';
+    if (ABBREVIATIONS.has(preceding.toLowerCase().replace(/\.$/, ''))) continue;
+
+    // A single capital before the period is almost always an initial.
+    if (/(^|\s)[A-Z]$/.test(text.slice(start, match.index))) continue;
+
+    out.push(text.slice(start, end));
+    start = end + match[2].length;
+  }
+
+  if (start < text.length) out.push(text.slice(start));
+  return out.filter((sentence) => sentence.trim().length > 0);
+}
+
+/**
  * Break a paragraph into typing units of roughly `target` characters, preferring
  * sentence boundaries, then word boundaries. Never splits mid-word.
  */
@@ -178,7 +222,8 @@ export function segmentProse(text: string, target: number): string[] {
   if (!clean) return [];
   if (clean.length <= target * 1.35) return [clean];
 
-  const sentences = clean.match(/[^.!?]+(?:[.!?]+["'”’)\]]*|$)\s*/g) ?? [clean];
+  const sentences = splitSentences(clean);
+  if (!sentences.length) return [clean];
   const out: string[] = [];
   let buffer = '';
 
@@ -195,7 +240,7 @@ export function segmentProse(text: string, target: number): string[] {
       continue;
     }
     if (buffer && buffer.length + sentence.length > target * 1.15) flush();
-    buffer += sentence;
+    buffer = buffer ? `${buffer} ${sentence}` : sentence;
   }
   flush();
 

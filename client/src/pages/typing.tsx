@@ -11,6 +11,8 @@ import {
   RotateCcw,
   SkipForward,
 } from 'lucide-react';
+import { ShortcutsOverlay } from '@/components/shortcuts';
+import { playError } from '@/lib/sound';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
 import { useSettings } from '@/components/chrome';
@@ -23,6 +25,7 @@ import {
   isTypeable,
   isTypingKey,
   recordKey,
+  restartBlock,
   shouldPreventDefault,
   skipLine,
   wpm,
@@ -38,6 +41,9 @@ const REFETCH_MARGIN = 14;
 /** Rendered context around the cursor. */
 const BEHIND = 6;
 const AHEAD = 8;
+/** Reading mode is for reading, so it shows much more of the page. */
+const READING_BEHIND = 10;
+const READING_AHEAD = 24;
 
 const READING_LINE_HEIGHT: Record<string, number> = {
   xs: 1.3,
@@ -64,6 +70,7 @@ export default function TypingPage() {
   const [tick, setTick] = useState(0);
   /** A read-only view of the current position — no keystrokes are scored. */
   const [readingMode, setReadingMode] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const { data: blocks } = useQuery<BlockView[]>({
     queryKey: ['/api/books', bookId, 'blocks', fetchFrom],
@@ -79,16 +86,9 @@ export default function TypingPage() {
 
   const { data: outline } = useQuery<{ idx: number; section: string }[]>({
     queryKey: ['/api/books', bookId, 'outline'],
-    enabled: Number.isFinite(bookId) && outlineOpen,
+    enabled: Number.isFinite(bookId),
   });
 
-  const options: EngineOptions = useMemo(
-    () => ({
-      strictMode: (settings?.strictMode ?? 1) === 1,
-      autoIndent: (settings?.autoIndent ?? 1) === 1,
-    }),
-    [settings?.strictMode, settings?.autoIndent]
-  );
   const skipCode = (settings?.skipCode ?? 0) === 1;
 
   /* ---------------------------------------------------------------- *
@@ -146,6 +146,16 @@ export default function TypingPage() {
 
   const currentBlock = idx === null ? undefined : byIdx.get(idx);
   const typing = isTypeable(currentBlock, skipCode);
+
+  // Case is only ever relaxed in prose; a listing that ignores case is wrong.
+  const options: EngineOptions = useMemo(
+    () => ({
+      mistakeMode: (settings?.mistakeMode ?? 'block') as EngineOptions['mistakeMode'],
+      autoIndent: (settings?.autoIndent ?? 1) === 1,
+      ignoreCase: (settings?.ignoreCaseProse ?? 0) === 1 && currentBlock?.kind !== 'code',
+    }),
+    [settings?.mistakeMode, settings?.autoIndent, settings?.ignoreCaseProse, currentBlock?.kind]
+  );
   const finished = Boolean(book && idx !== null && idx >= book.blockCount - 1 && !typing);
 
   /* ---------------------------------------------------------------- *
@@ -243,6 +253,17 @@ export default function TypingPage() {
    * Keyboard
    * ---------------------------------------------------------------- */
 
+  /** Moves the cursor to a block, persisting the new position. */
+  const goTo = useCallback(
+    (target: number) => {
+      const clamped = Math.max(0, target);
+      setFetchFrom((from) => (clamped < from || clamped > from + WINDOW - REFETCH_MARGIN ? Math.max(0, clamped - BEHIND) : from));
+      setIdx(clamped);
+      savePosition(clamped);
+    },
+    [savePosition]
+  );
+
   const advance = useCallback(() => {
     setIdx((current) => {
       if (current === null) return current;
@@ -253,31 +274,164 @@ export default function TypingPage() {
     });
   }, [nextTypeable, savePosition]);
 
+  /** Walks back to the previous block that expects keystrokes. */
+  const retreat = useCallback(() => {
+    setIdx((current) => {
+      if (current === null || current === 0) return current;
+      for (let i = current - 1; i >= 0; i -= 1) {
+        const block = byIdx.get(i);
+        if (!block) break;
+        if (isTypeable(block, skipCode)) {
+          savePosition(i);
+          return i;
+        }
+      }
+      const target = Math.max(0, current - 1);
+      savePosition(target);
+      return target;
+    });
+  }, [byIdx, savePosition, skipCode]);
+
+  /** Jumps to the neighbouring section heading, using the chapter outline. */
+  const jumpSection = useCallback(
+    (direction: 1 | -1) => {
+      if (idx === null || !outline?.length) return;
+      const target =
+        direction === 1
+          ? outline.find((entry) => entry.idx > idx)
+          : [...outline].reverse().find((entry) => entry.idx < idx);
+      if (target) goTo(target.idx);
+    },
+    [idx, outline, goTo]
+  );
+
   const kindRef = useRef<string>('prose');
   kindRef.current = currentBlock?.kind ?? 'prose';
+
+  const stateRef = useRef<BlockState | null>(null);
+  stateRef.current = state;
+
+  const advanceMode = settings?.advanceMode ?? 'auto';
+
+  /* ---------------------------------------------------------------- *
+   * Auto-pause
+   *
+   * The same threshold that stops counting idle time also parks the session,
+   * so the clock and the screen agree about whether you are still working.
+   * ---------------------------------------------------------------- */
+
+  const autoPauseMs = settings?.autoPauseMs ?? 5000;
+
+  useEffect(() => {
+    if (paused || readingMode || autoPauseMs <= 0) return;
+
+    const interval = window.setInterval(() => {
+      if (!lastKeyAtRef.current) return;
+      if (performance.now() - lastKeyAtRef.current < autoPauseMs) return;
+
+      lastKeyAtRef.current = 0;
+      setPaused(true);
+      void flushSession();
+    }, 500);
+
+    return () => window.clearInterval(interval);
+  }, [paused, readingMode, autoPauseMs, flushSession]);
+
+  /* ---------------------------------------------------------------- *
+   * Keyboard
+   *
+   * Typing consumes every printable key, so in-session commands live on
+   * modifiers. Reading mode scores nothing, which frees the bare keys.
+   * ---------------------------------------------------------------- */
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
 
-      // Reading mode: Ctrl+M toggles in and out, and nothing else is live
-      // while it's on — keystrokes are read, not scored.
-      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === 'm') {
+      const ctrl = event.ctrlKey && !event.metaKey && !event.altKey;
+
+      /* ---- Available in both modes ---- */
+
+      if (ctrl && event.key.toLowerCase() === 'm') {
         event.preventDefault();
-        setReadingMode((r) => !r);
+        setReadingMode((reading) => {
+          // Leaving reading mode resumes a clean session clock; entering it
+          // banks the session so far and clears any pause.
+          lastKeyAtRef.current = 0;
+          if (!reading) void flushSession();
+          setPaused(false);
+          return !reading;
+        });
         return;
       }
-      if (readingMode) return;
 
-      // Ctrl+Down: skip the rest of the current line (code listings only —
-      // prose has no internal line breaks, so it falls through to the block
-      // skip below).
-      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key === 'ArrowDown') {
+      if (ctrl && (event.key === '/' || event.key === '?')) {
+        event.preventDefault();
+        setShortcutsOpen((open) => !open);
+        return;
+      }
+
+      if (shortcutsOpen) {
+        if (event.key === 'Escape' || event.key === 'Enter') {
+          event.preventDefault();
+          setShortcutsOpen(false);
+        }
+        return;
+      }
+
+      /* ---- Reading mode: bare keys navigate ---- */
+
+      if (readingMode) {
+        if (event.shiftKey && event.key === 'ArrowRight') {
+          event.preventDefault();
+          jumpSection(1);
+          return;
+        }
+        if (event.shiftKey && event.key === 'ArrowLeft') {
+          event.preventDefault();
+          jumpSection(-1);
+          return;
+        }
+        if (event.key === 'ArrowDown' || event.key.toLowerCase() === 'j') {
+          event.preventDefault();
+          advance();
+          return;
+        }
+        if (event.key === 'ArrowUp' || event.key.toLowerCase() === 'k') {
+          event.preventDefault();
+          retreat();
+          return;
+        }
+        if (event.key === 'Enter' || event.key === 'Escape') {
+          event.preventDefault();
+          lastKeyAtRef.current = 0;
+          setReadingMode(false);
+          return;
+        }
+        return; // Space, PageDown and friends keep their native scrolling
+      }
+
+      /* ---- Typing mode commands ---- */
+
+      if (ctrl && event.shiftKey && event.key === 'ArrowRight') {
+        event.preventDefault();
+        jumpSection(1);
+        return;
+      }
+      if (ctrl && event.shiftKey && event.key === 'ArrowLeft') {
+        event.preventDefault();
+        jumpSection(-1);
+        return;
+      }
+
+      // Skip the rest of the current line. Prose has no internal breaks, so
+      // there it degrades to skipping the whole block.
+      if (ctrl && event.key === 'ArrowDown') {
         event.preventDefault();
         setState((previous) => {
           if (!previous) return previous;
-          const skipped = skipLine(previous);
+          const skipped = skipLine(previous, options);
           if (skipped === previous) {
             window.setTimeout(advance, 0);
             return previous;
@@ -287,15 +441,33 @@ export default function TypingPage() {
         return;
       }
 
-      // Ctrl+Right: skip the whole current paragraph / listing / figure.
-      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key === 'ArrowRight') {
+      if (ctrl && event.key === 'ArrowRight') {
         event.preventDefault();
         advance();
         return;
       }
 
+      if (ctrl && event.key === 'ArrowLeft') {
+        event.preventDefault();
+        retreat();
+        return;
+      }
+
+      if (ctrl && event.key === 'Backspace') {
+        event.preventDefault();
+        setState((previous) => (previous ? restartBlock(previous, options) : previous));
+        return;
+      }
+
       // Never swallow other browser and OS shortcuts.
       if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+      // With confirm-to-advance, a finished block waits here for Enter.
+      if (advanceMode === 'confirm' && stateRef.current?.done && event.key === 'Enter') {
+        event.preventDefault();
+        advance();
+        return;
+      }
 
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -307,6 +479,7 @@ export default function TypingPage() {
       if (paused) {
         if (isTypingKey(event)) {
           event.preventDefault();
+          lastKeyAtRef.current = 0;
           setPaused(false);
         }
         return;
@@ -323,12 +496,13 @@ export default function TypingPage() {
         lastKeyAtRef.current = now;
 
         const outcome = applyKey(previous, event.key, options);
+        if (!outcome.correct && outcome.counted && settings?.soundOnError === 1) playError();
         metricsRef.current = recordKey(
           metricsRef.current,
           outcome,
           kindRef.current,
           gap,
-          settings?.autoPauseMs
+          autoPauseMs
         );
 
         if (outcome.completed) {
@@ -337,7 +511,7 @@ export default function TypingPage() {
             blocksCompleted: metricsRef.current.blocksCompleted + 1,
           };
           // Let the finished block render once, then move on.
-          window.setTimeout(advance, 90);
+          if (advanceMode === 'auto') window.setTimeout(advance, 90);
         }
 
         return outcome.state;
@@ -346,7 +520,19 @@ export default function TypingPage() {
 
     window.addEventListener('keydown', onKeyDown, { passive: false });
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [advance, flushSession, options, paused, readingMode, settings?.autoPauseMs]);
+  }, [
+    advance,
+    retreat,
+    jumpSection,
+    flushSession,
+    options,
+    paused,
+    readingMode,
+    shortcutsOpen,
+    autoPauseMs,
+    advanceMode,
+    settings?.soundOnError,
+  ]);
 
   /* ---------------------------------------------------------------- *
    * Scroll the cursor into view
@@ -375,14 +561,16 @@ export default function TypingPage() {
 
   const visible = useMemo(() => {
     if (idx === null) return [];
+    const behind = readingMode ? READING_BEHIND : BEHIND;
+    const ahead = readingMode ? READING_AHEAD : AHEAD;
     const out: { block: BlockView; mode: BlockMode }[] = [];
-    for (let i = Math.max(0, idx - BEHIND); i <= idx + AHEAD; i += 1) {
+    for (let i = Math.max(0, idx - behind); i <= idx + ahead; i += 1) {
       const block = byIdx.get(i);
       if (!block) continue;
       out.push({ block, mode: i === idx ? 'active' : i < idx ? 'done' : 'ahead' });
     }
     return out;
-  }, [idx, byIdx]);
+  }, [idx, byIdx, readingMode]);
 
   const metrics = metricsRef.current;
   void tick; // the interval above drives HUD refreshes
@@ -437,7 +625,14 @@ export default function TypingPage() {
           </button>
           <button
             type="button"
-            onClick={() => setReadingMode((r) => !r)}
+            onClick={() => {
+              setReadingMode((reading) => {
+                lastKeyAtRef.current = 0;
+                if (!reading) void flushSession();
+                return !reading;
+              });
+              setPaused(false);
+            }}
             className={cn(
               'rounded-md p-2 hover-elevate active-elevate-2',
               readingMode ? 'text-primary' : 'text-muted-foreground'
@@ -510,33 +705,14 @@ export default function TypingPage() {
       {/* ---- Reading mode banner ---- */}
       {readingMode && (
         <div className="sticky top-14 z-30 border-b border-primary/30 bg-primary/10 px-4 py-1.5 text-center text-xs text-primary">
-          Reading mode — keystrokes are not scored. Ctrl+M to resume typing.
+          Reading mode — nothing is scored. ↓ ↑ or J K to move, Enter to type from here, Ctrl+M to
+          switch back.
         </div>
       )}
 
       {/* ---- Reading surface ---- */}
       <div className="mx-auto max-w-3xl px-4 pt-10">
-        {readingMode && currentBlock ? (
-          <div
-            className={cn(
-              'tw-block',
-              settings?.typeface === 'serif' ? 'font-serif' : 'font-sans'
-            )}
-            style={{
-              fontSize: settings?.readingFontSize ?? 18,
-              lineHeight: READING_LINE_HEIGHT[settings?.readingLineHeight ?? 'm'],
-            }}
-            data-testid="text-reading-mode-block"
-          >
-            {currentBlock.kind === 'code' ? (
-              <pre className="overflow-x-auto whitespace-pre font-mono" style={{ fontSize: Math.max(13, (settings?.readingFontSize ?? 18) - 4) }}>
-                {currentBlock.text}
-              </pre>
-            ) : (
-              currentBlock.text
-            )}
-          </div>
-        ) : finished ? (
+        {finished ? (
           <div className="rounded-xl border border-card-border bg-card px-6 py-16 text-center">
             <Check className="mx-auto h-8 w-8 text-primary" />
             <h2 className="mt-4 font-serif text-lg text-foreground">You reached the end</h2>
@@ -563,19 +739,29 @@ export default function TypingPage() {
               key={block.id}
               ref={mode === 'active' ? activeRef : undefined}
               data-caret={mode === 'active' ? settings?.caretStyle ?? 'line' : undefined}
+              data-caret-blink={
+                mode === 'active' ? (settings?.caretBlink === 0 ? 'off' : 'on') : undefined
+              }
               className={cn(
                 'border-l-2 pl-5 transition-colors',
                 mode === 'active' ? 'border-primary/50' : 'border-transparent',
-                mode === 'active' && settings?.keepInPosition === 1 && 'tw-keep-in-position bg-background'
+                mode === 'active' &&
+                  !readingMode &&
+                  settings?.keepInPosition === 1 &&
+                  'tw-keep-in-position bg-background'
               )}
             >
               <ReaderBlock
                 block={block}
                 mode={mode}
-                state={mode === 'active' && state ? state : undefined}
-                fontSize={settings?.fontSize ?? 20}
+                state={!readingMode && mode === 'active' && state ? state : undefined}
+                fontSize={readingMode ? settings?.readingFontSize ?? 18 : settings?.fontSize ?? 20}
+                lineHeight={
+                  readingMode ? READING_LINE_HEIGHT[settings?.readingLineHeight ?? 'm'] : undefined
+                }
                 typeface={settings?.typeface ?? 'serif'}
                 markIncorrectWords={settings?.markIncorrectWords === 1}
+                showNewlines={settings?.showNewlines !== 0}
               />
             </div>
           ))
@@ -583,7 +769,7 @@ export default function TypingPage() {
       </div>
 
       {/* ---- Paused overlay ---- */}
-      {paused && (
+      {paused && !readingMode && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur">
           <div className="rounded-xl border border-border bg-card px-8 py-10 text-center shadow-lg">
             <Keyboard className="mx-auto h-7 w-7 text-muted-foreground" />
@@ -595,7 +781,10 @@ export default function TypingPage() {
         </div>
       )}
 
+      {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
+
       {/* ---- HUD ---- */}
+      {!readingMode && (
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-background/90 backdrop-blur-sm">
         <div className="mx-auto flex max-w-4xl items-center gap-6 px-4 py-3">
           <HudStat label="WPM" value={liveWpm} testId="text-live-wpm" />
@@ -607,11 +796,29 @@ export default function TypingPage() {
           />
 
           <div className="ml-auto flex items-center gap-2">
-            {currentBlock?.kind === 'code' && (
+            {advanceMode === 'confirm' && state?.done && (
+              <span
+                className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs text-primary"
+                data-testid="text-confirm-hint"
+              >
+                Enter to continue
+              </span>
+            )}
+            {currentBlock?.kind === 'code' && !state?.done && (
               <span className="hidden rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground sm:inline">
                 Enter for newline · Tab for indent
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => setShortcutsOpen(true)}
+              className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
+              aria-label="Shortcuts (Ctrl+/)"
+              title="Shortcuts — Ctrl+/"
+              data-testid="button-shortcuts"
+            >
+              <Keyboard className="h-4 w-4" />
+            </button>
             <button
               type="button"
               onClick={advance}
@@ -624,6 +831,7 @@ export default function TypingPage() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

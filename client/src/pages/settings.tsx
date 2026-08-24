@@ -1,4 +1,5 @@
-import { HardDrive, Keyboard } from 'lucide-react';
+import { HardDrive } from 'lucide-react';
+import { SHORTCUTS, Keys } from '@/components/shortcuts';
 import { useSettings, useUpdateSettings } from '@/components/chrome';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
@@ -25,12 +26,35 @@ export default function SettingsPage() {
       </div>
 
       <Section title="Typing">
+        <Choice
+          label="On a mistake"
+          hint="Block holds the cursor until you type the right character. Mark leaves the mistake visible and moves on. Fix corrects it for you — the error still counts, the repaired character earns nothing."
+          value={settings.mistakeMode}
+          options={[
+            { value: 'block', label: 'Block' },
+            { value: 'mark', label: 'Mark' },
+            { value: 'fix', label: 'Fix' },
+          ]}
+          onChange={(value) => set({ mistakeMode: value })}
+          testId="choice-mistakemode"
+        />
+        <Choice
+          label="After finishing a block"
+          hint="Move on by itself, or wait for Enter so you set the pace."
+          value={settings.advanceMode}
+          options={[
+            { value: 'auto', label: 'Move on' },
+            { value: 'confirm', label: 'Wait for Enter' },
+          ]}
+          onChange={(value) => set({ advanceMode: value })}
+          testId="choice-advancemode"
+        />
         <Toggle
-          label="Strict mode"
-          hint="The cursor holds until a mistake is corrected. Off means errors are marked and you keep going."
-          checked={settings.strictMode === 1}
-          onChange={(v) => set({ strictMode: v ? 1 : 0 })}
-          testId="switch-strict"
+          label="Ignore capitalisation in prose"
+          hint="Accept the wrong case in prose only. Listings always compare exactly, because case matters in code."
+          checked={settings.ignoreCaseProse === 1}
+          onChange={(v) => set({ ignoreCaseProse: v ? 1 : 0 })}
+          testId="switch-ignorecase"
         />
         <Toggle
           label="Auto-indent code"
@@ -57,6 +81,19 @@ export default function SettingsPage() {
           ]}
           onChange={(value) => set({ caretStyle: value })}
           testId="choice-caretstyle"
+        />
+        <Toggle
+          label="Blink the caret"
+          checked={settings.caretBlink === 1}
+          onChange={(v) => set({ caretBlink: v ? 1 : 0 })}
+          testId="switch-caretblink"
+        />
+        <Toggle
+          label="Show newline markers"
+          hint="Draws a faint ⏎ at the end of each line in a listing, where Enter is expected."
+          checked={settings.showNewlines === 1}
+          onChange={(v) => set({ showNewlines: v ? 1 : 0 })}
+          testId="switch-shownewlines"
         />
         <Toggle
           label="Keep active line in position"
@@ -87,7 +124,7 @@ export default function SettingsPage() {
         />
       </Section>
 
-      <Section title="Reading mode">
+      <Section title="Reading mode prompt">
         <Range
           label="Reading text size"
           hint="Applies only to reading mode (Ctrl+M), separate from the typing text size above."
@@ -114,7 +151,17 @@ export default function SettingsPage() {
         />
       </Section>
 
-      <Section title="Reading">
+      <Section title="Sound">
+        <Toggle
+          label="Tone on a mistake"
+          hint="A short low thud when a keystroke is wrong. Nothing is downloaded — the tone is synthesised."
+          checked={settings.soundOnError === 1}
+          onChange={(v) => set({ soundOnError: v ? 1 : 0 })}
+          testId="switch-soundonerror"
+        />
+      </Section>
+
+      <Section title="Prompt display">
         <Choice
           label="Prose typeface"
           hint="Listings always use the monospace face."
@@ -173,13 +220,16 @@ export default function SettingsPage() {
         />
       </Section>
 
-      <Section title="Keyboard shortcuts">
-        <ShortcutRow keys={['Esc']} label="Pause / resume" />
-        <ShortcutRow keys={['Ctrl', 'M']} label="Toggle reading mode" />
-        <ShortcutRow keys={['Ctrl', '\u2193']} label="Skip the rest of the current line (code listings)" />
-        <ShortcutRow keys={['Ctrl', '\u2192']} label="Skip the current paragraph, listing, or figure" />
-        <ShortcutRow keys={['Tab']} label="Consume expected indentation (code listings)" />
-        <ShortcutRow keys={['Backspace']} label="Correct a mistake; steps back over auto-indent in one move" />
+      <Section title="Shortcuts while typing">
+        {SHORTCUTS.filter((shortcut) => shortcut.scope !== 'reading').map((shortcut) => (
+          <ShortcutRow key={shortcut.label} keys={shortcut.keys} label={shortcut.label} />
+        ))}
+      </Section>
+
+      <Section title="Shortcuts in reading mode">
+        {SHORTCUTS.filter((shortcut) => shortcut.scope === 'reading').map((shortcut) => (
+          <ShortcutRow key={shortcut.label} keys={shortcut.keys} label={shortcut.label} />
+        ))}
       </Section>
 
       <div className="flex gap-3 rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
@@ -215,20 +265,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function ShortcutRow({ keys, label }: { keys: string[]; label: string }) {
   return (
     <div className="flex items-center justify-between gap-6 px-4 py-3">
-      <div className="flex items-center gap-2 text-sm text-foreground">
-        <Keyboard className="h-3.5 w-3.5 text-muted-foreground" />
-        {label}
-      </div>
-      <div className="flex shrink-0 items-center gap-1">
-        {keys.map((k, i) => (
-          <kbd
-            key={i}
-            className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground"
-          >
-            {k}
-          </kbd>
-        ))}
-      </div>
+      <span className="text-sm text-foreground">{label}</span>
+      <Keys keys={keys} />
     </div>
   );
 }

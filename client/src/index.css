@@ -386,6 +386,10 @@
     animation: tw-caret 1.1s steps(1) infinite;
   }
 
+  [data-caret-blink='off'] .tw-char-current::before {
+    animation: none;
+  }
+
   [data-caret='block'] .tw-char-current::before {
     left: 0;
     right: 0;

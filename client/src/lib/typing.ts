@@ -25,11 +25,19 @@ export interface BlockState {
   done: boolean;
 }
 
+export type MistakeMode = 'block' | 'mark' | 'fix';
+
 export interface EngineOptions {
-  /** Mistakes must be corrected before the cursor advances. */
-  strictMode: boolean;
+  /**
+   * block — hold the cursor on a mistake until it is corrected
+   * mark  — mark the mistake and move on
+   * fix   — count the mistake, then fill in the right character
+   */
+  mistakeMode: MistakeMode;
   /** Skip the next line's indentation automatically after Enter. */
   autoIndent: boolean;
+  /** Accept the wrong case. Never applied inside a listing. */
+  ignoreCase: boolean;
 }
 
 /** What a keystroke did, so the caller can update metrics. */
@@ -144,7 +152,11 @@ export function applyKey(previous: BlockState, key: string, options: EngineOptio
   const typed = key === 'Enter' ? '\n' : key;
   if (typed.length !== 1) return NO_OP(state);
 
-  if (typed === expectedChar) {
+  const matches =
+    typed === expectedChar ||
+    (options.ignoreCase && typed.toLowerCase() === expectedChar.toLowerCase());
+
+  if (matches) {
     state.status[state.pos] = 'correct';
     state.pos += 1;
 
@@ -155,14 +167,18 @@ export function applyKey(previous: BlockState, key: string, options: EngineOptio
     return { state, counted: true, correct: true, correctChars, missedKey: null, completed };
   }
 
-  // A mistake. In strict mode the cursor holds until it is corrected.
-  state.status[state.pos] = 'wrong';
-  if (!options.strictMode) {
+  /* ---- A mistake ---- */
+
+  // 'fix' repairs the character so the page stays readable, but the error is
+  // still counted and the repaired character earns no credit.
+  state.status[state.pos] = options.mistakeMode === 'fix' ? 'correct' : 'wrong';
+
+  if (options.mistakeMode !== 'block') {
     state.pos += 1;
     if (options.autoIndent && expectedChar === '\n') consumeIndent(state);
   }
 
-  const completed = options.strictMode ? false : finish(state);
+  const completed = options.mistakeMode === 'block' ? false : finish(state);
   return {
     state,
     counted: true,

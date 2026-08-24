@@ -54,18 +54,51 @@ Scanned PDFs with no text layer are rejected with an explanation rather than imp
 | Key | Behaviour |
 | --- | --- |
 | Printable keys | Compared against the expected character |
-| `Enter` | A real character inside a listing — the `⏎` marker shows where it is expected |
-| `Tab` | Consumes expected indentation, up to 8 spaces |
-| `Backspace` | Steps back, and steps over auto-filled indentation in one move |
+| `Enter` | A real character inside a listing — a faint `⏎` marks where it is due |
+| `Tab` | Fills in expected indentation, up to 8 spaces |
+| `Backspace` | Steps back, clearing auto-filled indentation in one move |
+
+### Shortcuts
+
+Typing consumes every printable key, so commands sit on modifiers. `Ctrl+/` shows this list in-session.
+
+| Shortcut | Does |
+| --- | --- |
+| `Ctrl+M` | Switch in and out of reading mode |
+| `Ctrl+/` | Show the shortcut list |
 | `Esc` | Pause and resume |
+| `Ctrl+↓` | Skip the rest of the current line |
+| `Ctrl+→` | Skip this paragraph, listing, or figure |
+| `Ctrl+←` | Back to the previous paragraph |
+| `Ctrl+Shift+→` / `Ctrl+Shift+←` | Jump between section headings |
+| `Ctrl+Backspace` | Start this block over |
 
-**Strict mode** (default) holds the cursor on a mistake until you type the right character. Turned off, mistakes are marked and the cursor moves on.
+**Reading mode** is a read-only pass over the same page at its own text size and leading — nothing is scored, and the HUD gets out of the way. Because no keystrokes are being graded there, the bare keys are free for navigation:
 
-**Auto-indent** (default) fills in the next line's leading whitespace after you press `Enter` in a listing, the way an editor would. Those characters are not counted as keystrokes, so they neither help nor hurt your speed.
+| Key | Does |
+| --- | --- |
+| `↓` / `J`, `↑` / `K` | Move a block forward or back |
+| `Shift+→` / `Shift+←` | Next or previous section heading |
+| `Space` | Scroll normally |
+| `Enter` | Start typing from here |
 
-Figures are never typed. The cursor walks past them while they stay on screen above the text that references them. Code can be skipped too, from Settings, if you want a prose-only pass.
+### Typing settings
 
-Speed is reported separately for prose and code, because they are different skills and mixing them hides both.
+| Setting | Options | Notes |
+| --- | --- | --- |
+| **On a mistake** | Block / Mark / Fix | Block holds the cursor until you type the right character. Mark leaves it visible and moves on. Fix repairs the character so the page stays readable — the error still counts and the repair earns no credit. |
+| **After finishing a block** | Move on / Wait for Enter | Whether the cursor advances by itself or you set the pace. |
+| **Ignore capitalisation in prose** | On / Off | Prose only. Listings always compare exactly, because case matters in code. |
+| **Auto-indent code** | On / Off | Fills the next line's leading whitespace after `Enter`. Those characters are not counted as keystrokes, so they neither help nor hurt your speed. |
+| **Skip code listings** | On / Off | Read listings instead of typing them. |
+| **Caret style** | Line / Block / Underline | Plus a separate blink toggle. |
+| **Show newline markers** | On / Off | The `⏎` at each line end inside a listing. |
+| **Keep active line in position** | On / Off | Pins the line you are typing instead of scrolling the page under you. |
+| **Mark incorrect words** | On / Off | Underlines the whole mistyped word, not just the missed character. |
+| **Auto-pause** | 2s / 5s / 10s / Never | Idle longer than this and the session parks itself. The same threshold stops the clock, so the timer and the screen always agree about whether you are working. |
+| **Tone on a mistake** | On / Off | Synthesised, not a downloaded asset. |
+
+Reading mode has its own text size and line height, separate from the typing prompt.
 
 ## Where your data lives
 
@@ -86,6 +119,7 @@ server/import.ts     File -> ordered blocks. Format parsers, normalisation, segm
 server/storage.ts    SQLite access, schema creation, statistics
 server/routes.ts     JSON API
 client/src/lib/typing.ts        Typing engine — pure functions, no React
+client/src/components/shortcuts.tsx  One shortcut list, shared by the overlay and settings
 client/src/components/reader.tsx  Renders prose, listings, and figures
 client/src/pages/typing.tsx     Cursor, keyboard, metrics, windowed loading
 ```

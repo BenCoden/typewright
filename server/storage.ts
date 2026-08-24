@@ -125,7 +125,19 @@ function ensureColumn(table: string, column: string, ddl: string) {
   }
 }
 
+ensureColumn('settings', 'mistake_mode', "mistake_mode TEXT NOT NULL DEFAULT 'block'");
+ensureColumn('settings', 'advance_mode', "advance_mode TEXT NOT NULL DEFAULT 'auto'");
+ensureColumn('settings', 'ignore_case_prose', 'ignore_case_prose INTEGER NOT NULL DEFAULT 0');
+ensureColumn('settings', 'show_newlines', 'show_newlines INTEGER NOT NULL DEFAULT 1');
 ensureColumn('settings', 'caret_style', "caret_style TEXT NOT NULL DEFAULT 'line'");
+ensureColumn('settings', 'caret_blink', 'caret_blink INTEGER NOT NULL DEFAULT 1');
+
+// The old boolean is the seed for the three-way replacement, once.
+sqlite.exec(`
+  UPDATE settings
+  SET mistake_mode = CASE WHEN strict_mode = 1 THEN 'block' ELSE 'mark' END
+  WHERE mistake_mode IS NULL OR mistake_mode = '';
+`);
 ensureColumn('settings', 'keep_in_position', 'keep_in_position INTEGER NOT NULL DEFAULT 0');
 ensureColumn(
   'settings',

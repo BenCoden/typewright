@@ -22,10 +22,14 @@ interface BlockProps {
   /** Present only for the active block. */
   state?: BlockState;
   fontSize: number;
+  /** Overrides the default prose leading — reading mode sets its own. */
+  lineHeight?: number;
   /** 'serif' | 'sans' — prose only; code is always monospace. */
   typeface: string;
   /** Underline the whole word on a mistake, not just the missed character. */
   markIncorrectWords?: boolean;
+  /** Draw the ⏎ marker at the end of each line inside a listing. */
+  showNewlines?: boolean;
 }
 
 /* ------------------------------------------------------------------ *
@@ -158,7 +162,7 @@ function Figure({ block, mode }: { block: BlockView; mode: BlockMode }) {
  * Listings
  * ------------------------------------------------------------------ */
 
-function CodeBlock({ block, mode, state, fontSize, markIncorrectWords }: BlockProps) {
+function CodeBlock({ block, mode, state, fontSize, markIncorrectWords, showNewlines }: BlockProps) {
   const active = mode === 'active' && state;
 
   return (
@@ -191,7 +195,11 @@ function CodeBlock({ block, mode, state, fontSize, markIncorrectWords }: BlockPr
       >
         <code className="whitespace-pre">
           {active ? (
-            <CharRun state={state} showNewlines markIncorrectWords={markIncorrectWords} />
+            <CharRun
+              state={state}
+              showNewlines={showNewlines !== false}
+              markIncorrectWords={markIncorrectWords}
+            />
           ) : (
             block.text
           )}
@@ -211,7 +219,15 @@ function CodeBlock({ block, mode, state, fontSize, markIncorrectWords }: BlockPr
  * Prose and headings
  * ------------------------------------------------------------------ */
 
-function TextBlock({ block, mode, state, fontSize, typeface, markIncorrectWords }: BlockProps) {
+function TextBlock({
+  block,
+  mode,
+  state,
+  fontSize,
+  lineHeight,
+  typeface,
+  markIncorrectWords,
+}: BlockProps) {
   const active = mode === 'active' && state;
   const heading = block.kind === 'heading';
 
@@ -226,7 +242,7 @@ function TextBlock({ block, mode, state, fontSize, typeface, markIncorrectWords 
       )}
       style={{
         fontSize: heading ? Math.min(30, fontSize + 4) : fontSize,
-        lineHeight: heading ? 1.3 : 1.75,
+        lineHeight: heading ? 1.3 : lineHeight ?? 1.75,
       }}
       data-testid={`text-block-${block.idx}`}
     >
