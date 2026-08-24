@@ -3,6 +3,7 @@ import { Link, useRoute } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import {
   ArrowLeft,
+  BookOpen,
   Check,
   Keyboard,
   List,
@@ -23,6 +24,7 @@ import {
   isTypingKey,
   recordKey,
   shouldPreventDefault,
+  skipLine,
   wpm,
   type BlockState,
   type EngineOptions,
@@ -36,6 +38,14 @@ const REFETCH_MARGIN = 14;
 /** Rendered context around the cursor. */
 const BEHIND = 6;
 const AHEAD = 8;
+
+const READING_LINE_HEIGHT: Record<string, number> = {
+  xs: 1.3,
+  s: 1.5,
+  m: 1.75,
+  l: 2,
+  xl: 2.25,
+};
 
 export default function TypingPage() {
   const [, params] = useRoute('/type/:id');
@@ -52,6 +62,8 @@ export default function TypingPage() {
   const [paused, setPaused] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [tick, setTick] = useState(0);
+  /** A read-only view of the current position — no keystrokes are scored. */
+  const [readingMode, setReadingMode] = useState(false);
 
   const { data: blocks } = useQuery<BlockView[]>({
     queryKey: ['/api/books', bookId, 'blocks', fetchFrom],
@@ -246,11 +258,44 @@ export default function TypingPage() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // Never swallow browser and OS shortcuts.
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
-
       const target = event.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+
+      // Reading mode: Ctrl+M toggles in and out, and nothing else is live
+      // while it's on — keystrokes are read, not scored.
+      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === 'm') {
+        event.preventDefault();
+        setReadingMode((r) => !r);
+        return;
+      }
+      if (readingMode) return;
+
+      // Ctrl+Down: skip the rest of the current line (code listings only —
+      // prose has no internal line breaks, so it falls through to the block
+      // skip below).
+      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key === 'ArrowDown') {
+        event.preventDefault();
+        setState((previous) => {
+          if (!previous) return previous;
+          const skipped = skipLine(previous);
+          if (skipped === previous) {
+            window.setTimeout(advance, 0);
+            return previous;
+          }
+          return skipped;
+        });
+        return;
+      }
+
+      // Ctrl+Right: skip the whole current paragraph / listing / figure.
+      if (event.ctrlKey && !event.metaKey && !event.altKey && event.key === 'ArrowRight') {
+        event.preventDefault();
+        advance();
+        return;
+      }
+
+      // Never swallow other browser and OS shortcuts.
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
 
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -278,7 +323,13 @@ export default function TypingPage() {
         lastKeyAtRef.current = now;
 
         const outcome = applyKey(previous, event.key, options);
-        metricsRef.current = recordKey(metricsRef.current, outcome, kindRef.current, gap);
+        metricsRef.current = recordKey(
+          metricsRef.current,
+          outcome,
+          kindRef.current,
+          gap,
+          settings?.autoPauseMs
+        );
 
         if (outcome.completed) {
           metricsRef.current = {
@@ -295,7 +346,7 @@ export default function TypingPage() {
 
     window.addEventListener('keydown', onKeyDown, { passive: false });
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [advance, flushSession, options, paused]);
+  }, [advance, flushSession, options, paused, readingMode, settings?.autoPauseMs]);
 
   /* ---------------------------------------------------------------- *
    * Scroll the cursor into view
@@ -386,6 +437,19 @@ export default function TypingPage() {
           </button>
           <button
             type="button"
+            onClick={() => setReadingMode((r) => !r)}
+            className={cn(
+              'rounded-md p-2 hover-elevate active-elevate-2',
+              readingMode ? 'text-primary' : 'text-muted-foreground'
+            )}
+            aria-label={readingMode ? 'Exit reading mode (Ctrl+M)' : 'Reading mode (Ctrl+M)'}
+            title="Reading mode — Ctrl+M"
+            data-testid="button-reading-mode"
+          >
+            <BookOpen className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
             onClick={() => {
               setPaused((p) => !p);
               void flushSession();
@@ -443,9 +507,36 @@ export default function TypingPage() {
         </>
       )}
 
+      {/* ---- Reading mode banner ---- */}
+      {readingMode && (
+        <div className="sticky top-14 z-30 border-b border-primary/30 bg-primary/10 px-4 py-1.5 text-center text-xs text-primary">
+          Reading mode — keystrokes are not scored. Ctrl+M to resume typing.
+        </div>
+      )}
+
       {/* ---- Reading surface ---- */}
       <div className="mx-auto max-w-3xl px-4 pt-10">
-        {finished ? (
+        {readingMode && currentBlock ? (
+          <div
+            className={cn(
+              'tw-block',
+              settings?.typeface === 'serif' ? 'font-serif' : 'font-sans'
+            )}
+            style={{
+              fontSize: settings?.readingFontSize ?? 18,
+              lineHeight: READING_LINE_HEIGHT[settings?.readingLineHeight ?? 'm'],
+            }}
+            data-testid="text-reading-mode-block"
+          >
+            {currentBlock.kind === 'code' ? (
+              <pre className="overflow-x-auto whitespace-pre font-mono" style={{ fontSize: Math.max(13, (settings?.readingFontSize ?? 18) - 4) }}>
+                {currentBlock.text}
+              </pre>
+            ) : (
+              currentBlock.text
+            )}
+          </div>
+        ) : finished ? (
           <div className="rounded-xl border border-card-border bg-card px-6 py-16 text-center">
             <Check className="mx-auto h-8 w-8 text-primary" />
             <h2 className="mt-4 font-serif text-lg text-foreground">You reached the end</h2>
@@ -471,9 +562,11 @@ export default function TypingPage() {
             <div
               key={block.id}
               ref={mode === 'active' ? activeRef : undefined}
+              data-caret={mode === 'active' ? settings?.caretStyle ?? 'line' : undefined}
               className={cn(
                 'border-l-2 pl-5 transition-colors',
-                mode === 'active' ? 'border-primary/50' : 'border-transparent'
+                mode === 'active' ? 'border-primary/50' : 'border-transparent',
+                mode === 'active' && settings?.keepInPosition === 1 && 'tw-keep-in-position bg-background'
               )}
             >
               <ReaderBlock
@@ -482,6 +575,7 @@ export default function TypingPage() {
                 state={mode === 'active' && state ? state : undefined}
                 fontSize={settings?.fontSize ?? 20}
                 typeface={settings?.typeface ?? 'serif'}
+                markIncorrectWords={settings?.markIncorrectWords === 1}
               />
             </div>
           ))

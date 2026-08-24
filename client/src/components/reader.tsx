@@ -24,6 +24,8 @@ interface BlockProps {
   fontSize: number;
   /** 'serif' | 'sans' — prose only; code is always monospace. */
   typeface: string;
+  /** Underline the whole word on a mistake, not just the missed character. */
+  markIncorrectWords?: boolean;
 }
 
 /* ------------------------------------------------------------------ *
@@ -37,8 +39,34 @@ const STATUS_CLASS = {
   skipped: 'tw-char-skipped',
 } as const;
 
-const CharRun = memo(function CharRun({ state, showNewlines }: { state: BlockState; showNewlines: boolean }) {
+const CharRun = memo(function CharRun({
+  state,
+  showNewlines,
+  markIncorrectWords,
+}: {
+  state: BlockState;
+  showNewlines: boolean;
+  markIncorrectWords?: boolean;
+}) {
   const chars = [...state.expected];
+
+  // When on, every character sharing a word with a mistake is underlined,
+  // not just the missed one — easier to spot at a glance.
+  const wordHasError = new Set<number>();
+  if (markIncorrectWords) {
+    let wordStart = 0;
+    let sawError = false;
+    for (let i = 0; i <= chars.length; i += 1) {
+      const boundary = i === chars.length || /\s/.test(chars[i]);
+      if (boundary) {
+        if (sawError) for (let j = wordStart; j < i; j += 1) wordHasError.add(j);
+        wordStart = i + 1;
+        sawError = false;
+      } else if (state.status[i] === 'wrong') {
+        sawError = true;
+      }
+    }
+  }
 
   return (
     <>
@@ -49,6 +77,7 @@ const CharRun = memo(function CharRun({ state, showNewlines }: { state: BlockSta
 
         // A wrong space or newline needs a visible body to show the error.
         const showAsError = status === 'wrong' && (char === ' ' || isNewline);
+        const wordUnderline = markIncorrectWords && wordHasError.has(i) && status !== 'wrong';
 
         // The return glyph is drawn before the break so it ends the line it
         // belongs to, and stays out of the caret's ::before slot.
@@ -71,7 +100,8 @@ const CharRun = memo(function CharRun({ state, showNewlines }: { state: BlockSta
               'tw-char',
               STATUS_CLASS[status],
               current && 'tw-char-current',
-              showAsError && 'tw-char-wrong'
+              showAsError && 'tw-char-wrong',
+              wordUnderline && 'underline decoration-destructive decoration-2 underline-offset-2'
             )}
           >
             {body}
@@ -128,7 +158,7 @@ function Figure({ block, mode }: { block: BlockView; mode: BlockMode }) {
  * Listings
  * ------------------------------------------------------------------ */
 
-function CodeBlock({ block, mode, state, fontSize }: BlockProps) {
+function CodeBlock({ block, mode, state, fontSize, markIncorrectWords }: BlockProps) {
   const active = mode === 'active' && state;
 
   return (
@@ -160,7 +190,11 @@ function CodeBlock({ block, mode, state, fontSize }: BlockProps) {
         style={{ fontSize: Math.max(13, fontSize - 4), tabSize: 4 }}
       >
         <code className="whitespace-pre">
-          {active ? <CharRun state={state} showNewlines /> : block.text}
+          {active ? (
+            <CharRun state={state} showNewlines markIncorrectWords={markIncorrectWords} />
+          ) : (
+            block.text
+          )}
         </code>
       </pre>
 
@@ -177,7 +211,7 @@ function CodeBlock({ block, mode, state, fontSize }: BlockProps) {
  * Prose and headings
  * ------------------------------------------------------------------ */
 
-function TextBlock({ block, mode, state, fontSize, typeface }: BlockProps) {
+function TextBlock({ block, mode, state, fontSize, typeface, markIncorrectWords }: BlockProps) {
   const active = mode === 'active' && state;
   const heading = block.kind === 'heading';
 
@@ -196,7 +230,11 @@ function TextBlock({ block, mode, state, fontSize, typeface }: BlockProps) {
       }}
       data-testid={`text-block-${block.idx}`}
     >
-      {active ? <CharRun state={state} showNewlines={false} /> : block.text}
+      {active ? (
+        <CharRun state={state} showNewlines={false} markIncorrectWords={markIncorrectWords} />
+      ) : (
+        block.text
+      )}
     </div>
   );
 }

@@ -195,12 +195,41 @@ export function isTypingKey(event: KeyboardEvent): boolean {
   return event.key.length === 1 || event.key === 'Enter' || event.key === 'Tab' || event.key === 'Backspace';
 }
 
+/**
+ * Advances the cursor to just past the next line break in `expected`,
+ * marking everything it jumps over as 'skipped'. Used by the skip-line
+ * shortcut inside multi-line code listings. Prose blocks have no internal
+ * newlines, so this is a no-op there — the caller falls back to
+ * skip-paragraph in that case.
+ */
+export function skipLine(previous: BlockState, options: EngineOptions): BlockState {
+  const nextBreak = previous.expected.indexOf('\n', previous.pos);
+  if (nextBreak === -1) return previous;
+
+  const status = [...previous.status];
+  for (let i = previous.pos; i <= nextBreak; i += 1) status[i] = 'skipped';
+
+  const state: BlockState = { ...previous, status, pos: nextBreak + 1, done: false };
+
+  // Land on the first real character of the next line, not its indentation.
+  if (options.autoIndent) consumeIndent(state);
+  return state;
+}
+
+/** Clears a block back to its opening position, keeping any leading indent. */
+export function restartBlock(previous: BlockState, options: EngineOptions): BlockState {
+  return createBlockState(previous.expected, options);
+}
+
 /* ------------------------------------------------------------------ *
  * Metrics
  * ------------------------------------------------------------------ */
 
 /** Gaps longer than this are treated as "away from the keyboard". */
 export const IDLE_CUTOFF_MS = 5000;
+
+/** Effectively "no cutoff" for the Auto-pause = Never setting. */
+const NO_CUTOFF_MS = 24 * 60 * 60 * 1000;
 
 export interface Metrics {
   /** Active typing time, idle gaps excluded. */
@@ -240,11 +269,14 @@ export function recordKey(
   metrics: Metrics,
   outcome: KeyOutcome,
   kind: string,
-  gapMs: number
+  gapMs: number,
+  /** From Settings.autoPauseMs; 0 means "Never", i.e. no cutoff. */
+  idleCutoffMs: number = IDLE_CUTOFF_MS
 ): Metrics {
   if (!outcome.counted) return metrics;
 
-  const billable = gapMs > 0 && gapMs < IDLE_CUTOFF_MS ? gapMs : 0;
+  const cutoff = idleCutoffMs > 0 ? idleCutoffMs : NO_CUTOFF_MS;
+  const billable = gapMs > 0 && gapMs < cutoff ? gapMs : 0;
   const isCode = kind === 'code';
 
   const next: Metrics = {

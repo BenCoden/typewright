@@ -371,6 +371,9 @@
     position: relative;
   }
 
+  /* Default caret: a thin line before the current character. Overridden by
+     [data-caret="block"] and [data-caret="underline"] below, driven by the
+     Caret style setting. */
   .tw-char-current::before {
     content: '';
     position: absolute;
@@ -381,6 +384,27 @@
     border-radius: 1px;
     background-color: hsl(var(--type-caret));
     animation: tw-caret 1.1s steps(1) infinite;
+  }
+
+  [data-caret='block'] .tw-char-current::before {
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: auto;
+    border-radius: 2px;
+    background-color: hsl(var(--type-caret) / 0.35);
+    mix-blend-mode: normal;
+  }
+
+  [data-caret='underline'] .tw-char-current::before {
+    left: -1px;
+    right: -1px;
+    top: auto;
+    bottom: -0.12em;
+    width: auto;
+    height: 2px;
+    border-radius: 1px;
   }
 
   @keyframes tw-caret {
@@ -416,5 +440,12 @@
     .tw-char-current::before {
       animation: none;
     }
+  }
+
+  /* Keep the active line pinned rather than free-scrolling the page. */
+  .tw-keep-in-position {
+    position: sticky;
+    top: 30vh;
+    z-index: 10;
   }
 }

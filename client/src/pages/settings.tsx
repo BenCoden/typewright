@@ -1,4 +1,4 @@
-import { HardDrive } from 'lucide-react';
+import { HardDrive, Keyboard } from 'lucide-react';
 import { useSettings, useUpdateSettings } from '@/components/chrome';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
@@ -45,6 +45,72 @@ export default function SettingsPage() {
           checked={settings.skipCode === 1}
           onChange={(v) => set({ skipCode: v ? 1 : 0 })}
           testId="switch-skipcode"
+        />
+        <Choice
+          label="Caret style"
+          hint="Shape of the marker at your current position."
+          value={settings.caretStyle}
+          options={[
+            { value: 'line', label: 'Line' },
+            { value: 'block', label: 'Block' },
+            { value: 'underline', label: 'Underline' },
+          ]}
+          onChange={(value) => set({ caretStyle: value })}
+          testId="choice-caretstyle"
+        />
+        <Toggle
+          label="Keep active line in position"
+          hint="Holds the line you're typing at a fixed spot on screen instead of scrolling freely."
+          checked={settings.keepInPosition === 1}
+          onChange={(v) => set({ keepInPosition: v ? 1 : 0 })}
+          testId="switch-keepinposition"
+        />
+        <Toggle
+          label="Mark incorrect words"
+          hint="Underline the whole word on a mistake, not just the missed character."
+          checked={settings.markIncorrectWords === 1}
+          onChange={(v) => set({ markIncorrectWords: v ? 1 : 0 })}
+          testId="switch-markincorrectwords"
+        />
+        <Choice
+          label="Auto-pause"
+          hint="How long you can sit idle mid-block before the timer pauses itself."
+          value={String(settings.autoPauseMs)}
+          options={[
+            { value: '2000', label: '2 sec' },
+            { value: '5000', label: '5 sec' },
+            { value: '10000', label: '10 sec' },
+            { value: '0', label: 'Never' },
+          ]}
+          onChange={(value) => set({ autoPauseMs: Number(value) })}
+          testId="choice-autopause"
+        />
+      </Section>
+
+      <Section title="Reading mode">
+        <Range
+          label="Reading text size"
+          hint="Applies only to reading mode (Ctrl+M), separate from the typing text size above."
+          value={settings.readingFontSize}
+          min={14}
+          max={32}
+          step={1}
+          suffix="px"
+          onCommit={(value) => set({ readingFontSize: value })}
+          testId="slider-readingfontsize"
+        />
+        <Choice
+          label="Reading line height"
+          value={settings.readingLineHeight}
+          options={[
+            { value: 'xs', label: 'XS' },
+            { value: 's', label: 'S' },
+            { value: 'm', label: 'M' },
+            { value: 'l', label: 'L' },
+            { value: 'xl', label: 'XL' },
+          ]}
+          onChange={(value) => set({ readingLineHeight: value })}
+          testId="choice-readinglineheight"
         />
       </Section>
 
@@ -107,6 +173,15 @@ export default function SettingsPage() {
         />
       </Section>
 
+      <Section title="Keyboard shortcuts">
+        <ShortcutRow keys={['Esc']} label="Pause / resume" />
+        <ShortcutRow keys={['Ctrl', 'M']} label="Toggle reading mode" />
+        <ShortcutRow keys={['Ctrl', '\u2193']} label="Skip the rest of the current line (code listings)" />
+        <ShortcutRow keys={['Ctrl', '\u2192']} label="Skip the current paragraph, listing, or figure" />
+        <ShortcutRow keys={['Tab']} label="Consume expected indentation (code listings)" />
+        <ShortcutRow keys={['Backspace']} label="Correct a mistake; steps back over auto-indent in one move" />
+      </Section>
+
       <div className="flex gap-3 rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
         <HardDrive className="mt-0.5 h-4 w-4 shrink-0" />
         <p>
@@ -134,6 +209,27 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         {children}
       </div>
     </section>
+  );
+}
+
+function ShortcutRow({ keys, label }: { keys: string[]; label: string }) {
+  return (
+    <div className="flex items-center justify-between gap-6 px-4 py-3">
+      <div className="flex items-center gap-2 text-sm text-foreground">
+        <Keyboard className="h-3.5 w-3.5 text-muted-foreground" />
+        {label}
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        {keys.map((k, i) => (
+          <kbd
+            key={i}
+            className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground"
+          >
+            {k}
+          </kbd>
+        ))}
+      </div>
+    </div>
   );
 }
 

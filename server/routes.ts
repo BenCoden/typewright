@@ -330,6 +330,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         soundOnError: z.number().int().min(0).max(1).optional(),
         fontSize: z.number().int().min(14).max(40).optional(),
         typeface: z.enum(['serif', 'sans']).optional(),
+        caretStyle: z.enum(['line', 'block', 'underline']).optional(),
+        keepInPosition: z.number().int().min(0).max(1).optional(),
+        markIncorrectWords: z.number().int().min(0).max(1).optional(),
+        autoPauseMs: z.number().int().min(0).max(60000).optional(),
+        readingFontSize: z.number().int().min(14).max(40).optional(),
+        readingLineHeight: z.enum(['xs', 's', 'm', 'l', 'xl']).optional(),
       })
       .safeParse(req.body);
     if (!body.success) return fail(res, 400, 'Invalid settings.');

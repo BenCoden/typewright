@@ -131,6 +131,22 @@ export const settings = sqliteTable('settings', {
   fontSize: integer('font_size').notNull().default(20),
   /** serif | sans — applies to prose. Code is always monospace. */
   typeface: text('typeface').notNull().default('serif'),
+
+  /* --- Typing mode --------------------------------------------------- */
+  /** line | block | underline — shape of the active-position caret. */
+  caretStyle: text('caret_style').notNull().default('line'),
+  /** Holds the active line at a fixed spot on screen instead of free scroll. */
+  keepInPosition: integer('keep_in_position').notNull().default(0),
+  /** Underline the whole word on a mistake, not just the missed character. */
+  markIncorrectWords: integer('mark_incorrect_words').notNull().default(0),
+  /** never | 2000 | 5000 | 10000 — ms of idle time before the session auto-pauses. */
+  autoPauseMs: integer('auto_pause_ms').notNull().default(5000),
+
+  /* --- Reading mode ---------------------------------------------------
+   * A distinct read-only prompt (own type size/line height), separate from
+   * the typing prompt above, entered with the reading-mode shortcut. */
+  readingFontSize: integer('reading_font_size').notNull().default(18),
+  readingLineHeight: text('reading_line_height').notNull().default('m'),
 });
 
 export type Book = typeof books.$inferSelect;

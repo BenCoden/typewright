@@ -110,6 +110,36 @@ sqlite.exec(`
   INSERT OR IGNORE INTO settings (id) VALUES (1);
 `);
 
+/**
+ * New settings columns land here as `ADD COLUMN IF NOT EXISTS`-style guards,
+ * so an existing data/typewright.db from before this change picks them up
+ * without a destructive rebuild. SQLite has no `ADD COLUMN IF NOT EXISTS`,
+ * so each is guarded by checking pragma table_info first.
+ */
+function ensureColumn(table: string, column: string, ddl: string) {
+  const existing = sqlite
+    .prepare(`PRAGMA table_info(${table})`)
+    .all() as { name: string }[];
+  if (!existing.some((c) => c.name === column)) {
+    sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
+}
+
+ensureColumn('settings', 'caret_style', "caret_style TEXT NOT NULL DEFAULT 'line'");
+ensureColumn('settings', 'keep_in_position', 'keep_in_position INTEGER NOT NULL DEFAULT 0');
+ensureColumn(
+  'settings',
+  'mark_incorrect_words',
+  'mark_incorrect_words INTEGER NOT NULL DEFAULT 0'
+);
+ensureColumn('settings', 'auto_pause_ms', 'auto_pause_ms INTEGER NOT NULL DEFAULT 5000');
+ensureColumn('settings', 'reading_font_size', 'reading_font_size INTEGER NOT NULL DEFAULT 18');
+ensureColumn(
+  'settings',
+  'reading_line_height',
+  "reading_line_height TEXT NOT NULL DEFAULT 'm'"
+);
+
 /* ------------------------------------------------------------------ *
  * Types
  * ------------------------------------------------------------------ */
