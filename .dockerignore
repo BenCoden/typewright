@@ -1,0 +1,9 @@
+node_modules
+dist
+data
+books
+.git
+.gitignore
+*.log
+scripts-test-import.ts
+scripts-theme.py
