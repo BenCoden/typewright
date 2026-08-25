@@ -252,6 +252,18 @@ export const settings = sqliteTable('settings', {
    * you learn the keys, off once they are second nature.
    */
   showShortcutHints: integer('show_shortcut_hints').notNull().default(1),
+
+  /**
+   * Skip blocks whose text uses characters not on the chosen keyboard.
+   *
+   * A transliterated Genesis chapter is full of diacritics — ə, ū, ō, ḥ — that
+   * a US layout cannot type; a Wikipedia article about a Nordic town is full of
+   * ø and æ. On this setting the reader steps over those blocks automatically
+   * and marks them so you can tell why.
+   */
+  skipUntypeable: integer('skip_untypeable').notNull().default(0),
+  /** us | us-intl | any — the layout used to decide what counts as typeable. */
+  keyboardLayout: text('keyboard_layout').notNull().default('us'),
 });
 
 /** One line of a documentation table of contents. */

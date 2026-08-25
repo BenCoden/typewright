@@ -6,6 +6,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppShell, ThemeSync } from '@/components/chrome';
 import LibraryPage from '@/pages/library';
+import ImportPage from '@/pages/import';
 import TypingPage from '@/pages/typing';
 import StatsPage from '@/pages/stats';
 import SettingsPage from '@/pages/settings';
@@ -23,6 +24,7 @@ function Routes() {
   const routes = (
     <Switch>
       <Route path="/" component={LibraryPage} />
+      <Route path="/import" component={ImportPage} />
       <Route path="/type/:id" component={TypingPage} />
       <Route path="/stats" component={StatsPage} />
       <Route path="/shortcuts" component={ShortcutsPage} />

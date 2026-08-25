@@ -81,11 +81,15 @@ async function fetchJson<T>(url: string): Promise<T> {
   return JSON.parse(await fetchText(url, 'application/json')) as T;
 }
 
-async function fetchBinary(url: string): Promise<Buffer | null> {
+async function fetchBinary(
+  url: string
+): Promise<{ data: Buffer; mime: string } | null> {
   try {
     const response = await request(url, 'image/*');
     const buffer = Buffer.from(await response.arrayBuffer());
-    return buffer.length && buffer.length < MAX_BYTES ? buffer : null;
+    if (!buffer.length || buffer.length >= MAX_BYTES) return null;
+    const mime = (response.headers.get('content-type') ?? '').split(';')[0].trim() || 'application/octet-stream';
+    return { data: buffer, mime };
   } catch {
     return null; // a missing figure must never fail the whole import
   }
@@ -225,15 +229,33 @@ async function downloadImage(reference: string, ctx: MarkdownContext): Promise<s
   const key = path.basename(new URL(url).pathname);
   if (ctx.images.has(key)) return key;
 
-  const ext = path.extname(key).toLowerCase();
-  const mime = MIME_BY_EXT[ext];
-  if (!mime) return null;
+  const fetched = await fetchBinary(url);
+  if (!fetched) return null;
 
-  const data = await fetchBinary(url);
-  if (!data) return null;
+  /*
+   * Some archives (OpenStax) serve figures under content-addressed hashes with
+   * no file extension, so the mime type has to come from the response header.
+   * Fall back to sniffing the bytes for known signatures when the header is
+   * generic, and drop anything that is not a bitmap image so an errant HTML
+   * response is not stored as a figure.
+   */
+  const mime = fetched.mime.startsWith('image/')
+    ? fetched.mime
+    : sniffMime(fetched.data) ?? MIME_BY_EXT[path.extname(key).toLowerCase()];
+  if (!mime || !mime.startsWith('image/')) return null;
 
-  ctx.images.set(key, { data, mime, ...imageSize(data) });
+  ctx.images.set(key, { data: fetched.data, mime, ...imageSize(fetched.data) });
   return key;
+}
+
+/** Detects a known image type from the first bytes, when the server omits one. */
+function sniffMime(buf: Buffer): string | null {
+  if (buf.length > 8 && buf.readUInt32BE(0) === 0x89504e47) return 'image/png';
+  if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf.length > 3 && buf.toString('ascii', 0, 3) === 'GIF') return 'image/gif';
+  if (buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP')
+    return 'image/webp';
+  return null;
 }
 
 /** The video id of a known player URL, when there is one. */
@@ -303,9 +325,12 @@ async function resolveEmbedPoster(
   try {
     const key = `embed-${video.provider}-${video.id}${path.extname(new URL(thumbnail).pathname) || '.jpg'}`;
     if (!ctx.images.has(key)) {
-      const data = await fetchBinary(thumbnail);
-      if (!data) return { title };
-      ctx.images.set(key, { data, mime: MIME_BY_EXT[path.extname(key).toLowerCase()] ?? 'image/jpeg', ...imageSize(data) });
+      const fetched = await fetchBinary(thumbnail);
+      if (!fetched) return { title };
+      const mime = fetched.mime.startsWith('image/')
+        ? fetched.mime
+        : sniffMime(fetched.data) ?? MIME_BY_EXT[path.extname(key).toLowerCase()] ?? 'image/jpeg';
+      ctx.images.set(key, { data: fetched.data, mime, ...imageSize(fetched.data) });
     }
     return { imageKey: key, title };
   } catch {
@@ -912,8 +937,23 @@ async function blocksFromHtmlElement(
     // Rewrite the element so the walker and the download agree on the key.
     img.setAttribute('src', reference);
 
+    /*
+     * Resolve first through ctx.resolve (the adapter's base — an archive URL,
+     * not the published page), then fall back to the page URL for absolute
+     * hrefs. Different adapters host images at different roots.
+     */
+    const absolute =
+      ctx.resolve(reference) ??
+      (() => {
+        try {
+          return new URL(reference, pageUrl).toString();
+        } catch {
+          return null;
+        }
+      })();
+    if (!absolute) continue;
+
     try {
-      const absolute = new URL(reference, pageUrl).toString();
       const key = await downloadImage(absolute, ctx);
       if (key) keyBySrc.set(reference, key);
     } catch {

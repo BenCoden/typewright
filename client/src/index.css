@@ -376,6 +376,22 @@
   }
 
   /*
+   * Characters the current keyboard layout cannot type. Shown as a soft
+   * warning tint so the block still reads, but it is obvious why the reader
+   * jumped past it.
+   */
+  .tw-untypeable {
+    background: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+    border-radius: 2px;
+    padding: 0 2px;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-decoration-color: hsl(var(--muted-foreground) / 0.7);
+    text-underline-offset: 3px;
+  }
+
+  /*
    * Words that were links on the original page. Marked, never coloured — the
    * typing status has to stay readable, so this is a dotted rule underneath
    * that shows where the page pointed somewhere else.

@@ -28,13 +28,14 @@ import { playError } from '@/lib/sound';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
 import { useSettings } from '@/components/chrome';
+import { stringIsTypeable, type KeyboardLayout } from '@/lib/keyboard';
 import { ReaderBlock, type BlockMode } from '@/components/reader';
 import {
   accuracy,
   applyKey,
   createBlockState,
   emptyMetrics,
-  isTypeable,
+  isTypeable as blockIsTypeable,
   isTypingKey,
   recordKey,
   restartBlock,
@@ -106,6 +107,24 @@ export default function TypingPage() {
 
   const skipCode = (settings?.skipCode ?? 0) === 1;
 
+  /**
+   * The keyboard layout the user has told us they are on, plus whether to
+   * skip blocks the layout cannot type. Falls back to the widest setting if
+   * settings have not loaded yet, so the reader never blocks progress.
+   */
+  const keyboardLayout: KeyboardLayout =
+    (settings?.keyboardLayout as KeyboardLayout | undefined) ?? 'any';
+  const skipUntypeable = settings?.skipUntypeable === 1 && keyboardLayout !== 'any';
+
+  const matchesLayout = useCallback(
+    (block: BlockView): boolean => {
+      if (!skipUntypeable) return true;
+      if (block.kind === 'image' || block.kind === 'embed') return true;
+      return stringIsTypeable(block.text, keyboardLayout);
+    },
+    [skipUntypeable, keyboardLayout]
+  );
+
   /* ---------------------------------------------------------------- *
    * Position
    * ---------------------------------------------------------------- */
@@ -151,24 +170,30 @@ export default function TypingPage() {
       for (let i = start; i < book.blockCount; i += 1) {
         const block = byIdx.get(i);
         if (!block) return i; // not loaded yet — stop here and let the fetch land
-        if (isTypeable(block, skipCode)) return i;
+        if (blockIsTypeable(block, skipCode) && matchesLayout(block)) return i;
       }
       return null;
     },
-    [book, byIdx, skipCode]
+    [book, byIdx, skipCode, matchesLayout]
   );
 
   useEffect(() => {
     if (idx === null || !book) return;
     const block = byIdx.get(idx);
-    if (!block || isTypeable(block, skipCode)) return;
+    if (!block || (blockIsTypeable(block, skipCode) && matchesLayout(block))) return;
 
     const next = nextTypeable(idx + 1);
-    if (next !== null && next !== idx) setIdx(next);
-  }, [idx, byIdx, book, skipCode, nextTypeable]);
+    if (next !== null && next !== idx) {
+      setIdx(next);
+    } else if (next === null && book && idx < book.blockCount - 1) {
+      // Nothing typeable ahead — land on the last block so the finished view
+      // takes over and explains why.
+      setIdx(book.blockCount - 1);
+    }
+  }, [idx, byIdx, book, skipCode, nextTypeable, matchesLayout]);
 
   const currentBlock = idx === null ? undefined : byIdx.get(idx);
-  const typing = isTypeable(currentBlock, skipCode);
+  const typing = !!currentBlock && blockIsTypeable(currentBlock, skipCode) && matchesLayout(currentBlock);
 
   // Case is only ever relaxed in prose; a listing that ignores case is wrong.
   /* ---------------------------------------------------------------- *
@@ -330,7 +355,7 @@ export default function TypingPage() {
       for (let i = current - 1; i >= 0; i -= 1) {
         const block = byIdx.get(i);
         if (!block) break;
-        if (isTypeable(block, skipCode)) {
+        if (blockIsTypeable(block, skipCode) && matchesLayout(block)) {
           savePosition(i);
           return i;
         }
@@ -339,7 +364,7 @@ export default function TypingPage() {
       savePosition(target);
       return target;
     });
-  }, [byIdx, savePosition, skipCode]);
+  }, [byIdx, savePosition, skipCode, matchesLayout]);
 
   /** Jumps to the neighbouring section heading, using the chapter outline. */
   const jumpSection = useCallback(
@@ -956,9 +981,13 @@ export default function TypingPage() {
         {finished ? (
           <div className="rounded-xl border border-card-border bg-card px-6 py-16 text-center">
             <Check className="mx-auto h-8 w-8 text-primary" />
-            <h2 className="mt-4 font-serif text-lg text-foreground">You reached the end</h2>
+            <h2 className="mt-4 font-serif text-lg text-foreground">
+              {skipUntypeable ? 'Nothing typeable on this page' : 'You reached the end'}
+            </h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Every block in {book.title} has been typed.
+              {skipUntypeable
+                ? `Every block on this page uses characters your ${keyboardLayout === 'us-intl' ? 'US International' : 'US'} layout cannot type. Change the layout in Settings to widen what counts as typeable.`
+                : `Every block in ${book.title} has been typed.`}
             </p>
             <button
               type="button"
@@ -1003,6 +1032,7 @@ export default function TypingPage() {
                 typeface={settings?.typeface ?? 'serif'}
                 markIncorrectWords={settings?.markIncorrectWords === 1}
                 showNewlines={settings?.showNewlines !== 0}
+                keyboardLayout={skipUntypeable ? keyboardLayout : undefined}
               />
             </div>
           ))

@@ -1,5 +1,6 @@
 import { memo, useState } from 'react';
-import { ImageOff, Play } from 'lucide-react';
+import { ImageOff, KeyboardOff, Play } from 'lucide-react';
+import { isTypeable, type KeyboardLayout } from '@/lib/keyboard';
 import { assetUrl } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
 import type { BlockState } from '@/lib/typing';
@@ -30,6 +31,11 @@ interface BlockProps {
   markIncorrectWords?: boolean;
   /** Draw the ⏎ marker at the end of each line inside a listing. */
   showNewlines?: boolean;
+  /**
+   * Which characters the user's keyboard can type. Untypeable ones are marked
+   * inline so a reader can see why the reader jumped past this block.
+   */
+  keyboardLayout?: KeyboardLayout;
 }
 
 /* ------------------------------------------------------------------ *
@@ -59,11 +65,13 @@ const CharRun = memo(function CharRun({
   showNewlines,
   markIncorrectWords,
   links,
+  keyboardLayout,
 }: {
   state: BlockState;
   showNewlines: boolean;
   markIncorrectWords?: boolean;
   links?: BlockLink[];
+  keyboardLayout?: KeyboardLayout;
 }) {
   const chars = [...state.expected];
   const linked = linkedChars(links, chars.length);
@@ -120,7 +128,8 @@ const CharRun = memo(function CharRun({
               current && 'tw-char-current',
               showAsError && 'tw-char-wrong',
               wordUnderline && 'underline decoration-destructive decoration-2 underline-offset-2',
-              linked?.has(i) && 'tw-linked'
+              linked?.has(i) && 'tw-linked',
+              keyboardLayout && !isTypeable(char, keyboardLayout) && 'tw-untypeable'
             )}
           >
             {body}
@@ -177,7 +186,15 @@ function Figure({ block, mode }: { block: BlockView; mode: BlockMode }) {
  * Listings
  * ------------------------------------------------------------------ */
 
-function CodeBlock({ block, mode, state, fontSize, markIncorrectWords, showNewlines }: BlockProps) {
+function CodeBlock({
+  block,
+  mode,
+  state,
+  fontSize,
+  markIncorrectWords,
+  showNewlines,
+  keyboardLayout,
+}: BlockProps) {
   const active = mode === 'active' && state;
 
   return (
@@ -214,9 +231,10 @@ function CodeBlock({ block, mode, state, fontSize, markIncorrectWords, showNewli
               state={state}
               showNewlines={showNewlines !== false}
               markIncorrectWords={markIncorrectWords}
+              keyboardLayout={keyboardLayout}
             />
           ) : (
-            block.text
+            <ProseText text={block.text} keyboardLayout={keyboardLayout} />
           )}
         </code>
       </pre>
@@ -381,23 +399,85 @@ function hostLabel(src: string): string {
  * Prose and headings
  * ------------------------------------------------------------------ */
 
-/** Splits text so the words that were links can be marked without being typed differently. */
-function LinkedText({ text, links }: { text: string; links: BlockLink[] }) {
-  const ordered = [...links].sort((a, b) => a.start - b.start);
+/**
+ * Renders inactive prose or a heading, marking two overlays if present:
+ *
+ * - Words that were links on the source page (dotted underline)
+ * - Individual characters not typeable on the chosen keyboard layout
+ *
+ * The layout overlay wraps each unreachable character in its own span so it
+ * reads correctly alongside link marks — the two rarely overlap in practice.
+ */
+function ProseText({
+  text,
+  links,
+  keyboardLayout,
+}: {
+  text: string;
+  links?: BlockLink[];
+  keyboardLayout?: KeyboardLayout;
+}) {
+  const ranges = (links ?? [])
+    .filter((link) => link.start < link.end && link.end <= text.length)
+    .sort((a, b) => a.start - b.start);
+
   const parts: React.ReactNode[] = [];
   let cursor = 0;
 
-  for (const [i, link] of ordered.entries()) {
-    if (link.start < cursor || link.end > text.length) continue;
-    if (link.start > cursor) parts.push(text.slice(cursor, link.start));
+  const emit = (chunk: string, linkKey?: string) => {
+    if (!chunk) return;
+
+    // Split around untypeable characters when a layout is in effect.
+    if (!keyboardLayout || keyboardLayout === 'any') {
+      parts.push(
+        linkKey ? (
+          <span key={linkKey} className="tw-linked">
+            {chunk}
+          </span>
+        ) : (
+          chunk
+        )
+      );
+      return;
+    }
+
+    const marked: React.ReactNode[] = [];
+    let buffer = '';
+    for (const char of chunk) {
+      if (isTypeable(char, keyboardLayout)) {
+        buffer += char;
+      } else {
+        if (buffer) {
+          marked.push(buffer);
+          buffer = '';
+        }
+        marked.push(
+          <span key={`u${marked.length}`} className="tw-untypeable">
+            {char}
+          </span>
+        );
+      }
+    }
+    if (buffer) marked.push(buffer);
+
     parts.push(
-      <span key={i} className="tw-linked">
-        {text.slice(link.start, link.end)}
-      </span>
+      linkKey ? (
+        <span key={linkKey} className="tw-linked">
+          {marked}
+        </span>
+      ) : (
+        <span key={`r${parts.length}`}>{marked}</span>
+      )
     );
+  };
+
+  for (const [i, link] of ranges.entries()) {
+    if (link.start < cursor) continue;
+    if (link.start > cursor) emit(text.slice(cursor, link.start));
+    emit(text.slice(link.start, link.end), `l${i}`);
     cursor = link.end;
   }
-  parts.push(text.slice(cursor));
+  emit(text.slice(cursor));
 
   return <>{parts}</>;
 }
@@ -410,6 +490,7 @@ function TextBlock({
   lineHeight,
   typeface,
   markIncorrectWords,
+  keyboardLayout,
 }: BlockProps) {
   const active = mode === 'active' && state;
   const heading = block.kind === 'heading';
@@ -435,11 +516,10 @@ function TextBlock({
           showNewlines={false}
           markIncorrectWords={markIncorrectWords}
           links={block.links}
+          keyboardLayout={keyboardLayout}
         />
-      ) : block.links?.length ? (
-        <LinkedText text={block.text} links={block.links} />
       ) : (
-        block.text
+        <ProseText text={block.text} links={block.links} keyboardLayout={keyboardLayout} />
       )}
     </div>
   );

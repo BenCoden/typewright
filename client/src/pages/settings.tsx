@@ -198,6 +198,28 @@ export default function SettingsPage() {
         />
       </Section>
 
+      <Section title="Keyboard layout">
+        <Choice
+          label="Layout you type on"
+          hint="Tells Typewright which characters your keyboard can reach. Blocks that use anything else can be skipped automatically."
+          value={settings.keyboardLayout}
+          options={[
+            { value: 'us', label: 'US / QWERTY' },
+            { value: 'us-intl', label: 'US International (dead keys)' },
+            { value: 'any', label: 'Every character (do not filter)' },
+          ]}
+          onChange={(value) => set({ keyboardLayout: value })}
+          testId="choice-keyboardlayout"
+        />
+        <Toggle
+          label="Skip untypeable blocks"
+          hint="Auto-advances past prose or listings that contain characters your layout cannot type — a Genesis chapter in Hebrew transliteration, a Wikipedia article with Nordic place names — and marks those characters so you can see why."
+          checked={settings.skipUntypeable === 1}
+          onChange={(v) => set({ skipUntypeable: v ? 1 : 0 })}
+          testId="switch-skipuntypeable"
+        />
+      </Section>
+
       <Section title="Import">
         <Toggle
           label="Normalise punctuation in prose"

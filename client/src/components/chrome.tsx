@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import { Link, useLocation } from 'wouter';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { BarChart3, BookOpen, Keyboard, Moon, Settings as SettingsIcon, Sun } from 'lucide-react';
+import { BarChart3, BookOpen, Keyboard, Moon, Settings as SettingsIcon, Sun, Upload } from 'lucide-react';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
 import type { Settings } from '@shared/schema';
@@ -104,6 +104,7 @@ export function ThemeToggle() {
 
 const NAV = [
   { href: '/', label: 'Library', icon: BookOpen },
+  { href: '/import', label: 'Import', icon: Upload },
   { href: '/stats', label: 'Progress', icon: BarChart3 },
   { href: '/shortcuts', label: 'Shortcuts', icon: Keyboard },
   { href: '/settings', label: 'Settings', icon: SettingsIcon },

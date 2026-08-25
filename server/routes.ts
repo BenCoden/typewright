@@ -651,6 +651,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         readingFontSize: z.number().int().min(14).max(40).optional(),
         readingLineHeight: z.enum(['xs', 's', 'm', 'l', 'xl']).optional(),
         showShortcutHints: z.number().int().min(0).max(1).optional(),
+        skipUntypeable: z.number().int().min(0).max(1).optional(),
+        keyboardLayout: z.enum(['us', 'us-intl', 'any']).optional(),
       })
       .safeParse(req.body);
     if (!body.success) return fail(res, 400, 'Invalid settings.');

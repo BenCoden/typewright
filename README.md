@@ -72,6 +72,8 @@ Typewright picks a route per site, best first:
 | **Sacred Texts Archive** | sacred-texts.com | Old but predictable markup, chapters typed as prose with a per-book table of contents |
 | **Rendered page** | Sites that build their content in the browser | Optional. See below. |
 
+Figures come across on all of these; the OpenStax adapter follows the archive's content-addressed resource URLs, and the mime type is read from the response header rather than guessed from an extension, so images without one still store correctly.
+
 Microsoft Learn is worth calling out: the page you see in a browser is a JavaScript shell with no code in it at all. Typewright reads the Markdown source instead, which is why C# listings come through with their indentation intact.
 
 ### Media and links
@@ -102,9 +104,19 @@ Documentation changes. The refresh button on a page's card in the library re-fet
 
 The comparison is against the text Typewright extracted, not the raw HTML, so an improvement to the importer also counts as a change. That means a page imported by an older version can be brought up to date without deleting it.
 
+### Two pages
+
+**Library** shows what you have imported — one card per doc set, one per book. **Import** holds everything to do with adding new material: the URL box, the pinned book stores, the file dropzone, the paste-a-passage form, and the report. Both live on the top nav.
+
 ### Where to get books
 
 The library page has a small **Where to get books** panel with a set of well-known DRM-free stores and free-text archives pre-pinned: Project Gutenberg, Standard Ebooks, eBooks.com, Smashwords, Leanpub, Humble Bundle, StoryBundle, Manning, Open Library, Unglue.it, DigiLibraries, OpenStax, Internet Sacred Text Archive, plus links out to Entertrained's own list and the Guide to DRM-Free Living. Pins are pins — clicking opens the site in a new tab — and any pin can be removed. Adding a new one takes a name and a URL, with an optional note.
+
+### Skip untypeable blocks
+
+A transliterated scripture chapter, a Wikipedia article about a Danish town, and a Learn code sample with a smart quote all share one problem: they include characters a US keyboard cannot type. The **Keyboard layout** setting tells Typewright which characters your keyboard reaches — **US / QWERTY**, **US International**, or **Every character** — and the **Skip untypeable blocks** switch auto-advances past prose or listings that go outside the layout.
+
+The characters that pushed a block off the layout are marked inline in the reader with a soft warning tint and a dotted underline, so it is obvious why the reader jumped past it. When a page has nothing typeable at all, the finished screen names the setting so you know which knob to turn.
 
 ### Pages that need JavaScript
 

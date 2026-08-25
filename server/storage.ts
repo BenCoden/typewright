@@ -189,6 +189,8 @@ ensureColumn(
 ensureColumn('settings', 'auto_pause_ms', 'auto_pause_ms INTEGER NOT NULL DEFAULT 5000');
 ensureColumn('settings', 'reading_font_size', 'reading_font_size INTEGER NOT NULL DEFAULT 18');
 ensureColumn('settings', 'show_shortcut_hints', 'show_shortcut_hints INTEGER NOT NULL DEFAULT 1');
+ensureColumn('settings', 'skip_untypeable', 'skip_untypeable INTEGER NOT NULL DEFAULT 0');
+ensureColumn('settings', 'keyboard_layout', "keyboard_layout TEXT NOT NULL DEFAULT 'us'");
 
 seedBookSources();
 
