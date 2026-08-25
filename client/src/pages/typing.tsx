@@ -51,15 +51,9 @@ import type { BlockView, Book } from '@shared/schema';
 /** Blocks fetched per request, and how much slack to keep ahead of the cursor. */
 const WINDOW = 60;
 const REFETCH_MARGIN = 14;
-/**
- * Rendered context around the cursor.
- *
- * Generous enough that the reader can see the full section they are typing —
- * headings, figures, and the paragraphs on either side — rather than a narrow
- * strip that hides the shape of the page. Reading mode widens it further still.
- */
-const BEHIND = 10;
-const AHEAD = 30;
+/** Rendered context around the cursor. */
+const BEHIND = 6;
+const AHEAD = 8;
 /** Reading mode is for reading, so it shows much more of the page. */
 const READING_BEHIND = 10;
 const READING_AHEAD = 24;
