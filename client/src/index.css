@@ -495,9 +495,18 @@
     border-color: hsl(var(--code-border));
   }
 
-  /* Blocks already typed, above the cursor. */
+  /* Blocks the reader jumped past. Muted so a skimmed page reads as skimmed. */
   .tw-block-done {
     color: hsl(var(--type-done));
+  }
+
+  /*
+   * Blocks the reader actually typed through. Rendered at full foreground
+   * so a page you finished stays crisp and readable, in clear contrast with
+   * the muted tone of blocks you jumped past.
+   */
+  .tw-block-typed {
+    color: hsl(var(--foreground) / 0.92);
   }
 
   /* Blocks not yet reached, below the cursor. */

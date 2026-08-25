@@ -48,6 +48,15 @@ import {
 } from '@/lib/typing';
 import type { BlockView, Book } from '@shared/schema';
 
+/** Result of one typed block, shown as a small chip under the block. */
+export interface BlockSummary {
+  wpm: number;
+  accuracy: number;
+  durationMs: number;
+  keystrokes: number;
+  errors: number;
+}
+
 /** Blocks fetched per request, and how much slack to keep ahead of the cursor. */
 const WINDOW = 60;
 const REFETCH_MARGIN = 14;
@@ -134,6 +143,7 @@ export default function TypingPage() {
     setIdx(null);
     setFetchFrom(0);
     setLinksOpen(false);
+    setBlockResults({});
     scrolledOnceRef.current = false;
   }, [bookId]);
 
@@ -244,6 +254,7 @@ export default function TypingPage() {
       return;
     }
     setState(createBlockState(currentBlock.text, options));
+    blockBaselineRef.current = { ...metricsRef.current };
   }, [currentBlock?.id, typing, options]);
 
   /* ---------------------------------------------------------------- *
@@ -253,6 +264,22 @@ export default function TypingPage() {
   const metricsRef = useRef<Metrics>(emptyMetrics());
   const lastKeyAtRef = useRef<number>(0);
   const savingRef = useRef(false);
+
+  /**
+   * Metrics captured at the start of the current block, so per-block WPM and
+   * accuracy can be computed by subtracting them from the running totals.
+   * Reset whenever the block changes.
+   */
+  const blockBaselineRef = useRef<Metrics>(emptyMetrics());
+
+  /**
+   * Results of every block that was actually typed, keyed by block idx.
+   *
+   * Skipped blocks never write here, so the reader can tell whether a "done"
+   * block was typed through or jumped past — a colour difference and a small
+   * summary under the block use this map.
+   */
+  const [blockResults, setBlockResults] = useState<Record<number, BlockSummary>>({});
 
   const flushSession = useCallback(async () => {
     const metrics = metricsRef.current;
@@ -625,6 +652,32 @@ export default function TypingPage() {
             ...metricsRef.current,
             blocksCompleted: metricsRef.current.blocksCompleted + 1,
           };
+
+          /*
+           * Take the delta between the block's baseline and the running totals
+           * to describe how the reader just did on this block alone. Errors
+           * are counted so accuracy reflects the run, not the whole session.
+           */
+          const baseline = blockBaselineRef.current;
+          const totals = metricsRef.current;
+          const durationMs = Math.max(0, totals.activeMs - baseline.activeMs);
+          const keystrokes = totals.keystrokes - baseline.keystrokes;
+          const correct = totals.correctChars - baseline.correctChars;
+          const errors = totals.errors - baseline.errors;
+
+          if (idx !== null && keystrokes > 0) {
+            setBlockResults((prior) => ({
+              ...prior,
+              [idx]: {
+                wpm: wpm(correct, durationMs),
+                accuracy: accuracy(keystrokes, errors),
+                durationMs,
+                keystrokes,
+                errors,
+              },
+            }));
+          }
+
           // Let the finished block render once, then move on.
           if (advanceMode === 'auto') window.setTimeout(advance, 90);
         }
@@ -681,14 +734,22 @@ export default function TypingPage() {
     if (idx === null) return [];
     const behind = readingMode ? READING_BEHIND : BEHIND;
     const ahead = readingMode ? READING_AHEAD : AHEAD;
-    const out: { block: BlockView; mode: BlockMode }[] = [];
+    const out: { block: BlockView; mode: BlockMode; summary: BlockSummary | null }[] = [];
     for (let i = Math.max(0, idx - behind); i <= idx + ahead; i += 1) {
       const block = byIdx.get(i);
       if (!block) continue;
-      out.push({ block, mode: i === idx ? 'active' : i < idx ? 'done' : 'ahead' });
+      /*
+       * A block above the cursor is either a page you typed through or one you
+       * skipped past. The reader tells them apart with a colour and a summary
+       * chip; the map is written on completion and lives for the session.
+       */
+      const summary = blockResults[i] ?? null;
+      const mode: BlockMode =
+        i === idx ? 'active' : i < idx ? (summary ? 'typed' : 'done') : 'ahead';
+      out.push({ block, mode, summary });
     }
     return out;
-  }, [idx, byIdx, readingMode]);
+  }, [idx, byIdx, readingMode, blockResults]);
 
   const metrics = metricsRef.current;
   void tick; // the interval above drives HUD refreshes
@@ -1004,7 +1065,7 @@ export default function TypingPage() {
             </button>
           </div>
         ) : (
-          visible.map(({ block, mode }) => (
+          visible.map(({ block, mode, summary }) => (
             <div
               key={block.id}
               ref={mode === 'active' ? activeRef : undefined}
@@ -1033,6 +1094,7 @@ export default function TypingPage() {
                 markIncorrectWords={settings?.markIncorrectWords === 1}
                 showNewlines={settings?.showNewlines !== 0}
                 keyboardLayout={skipUntypeable ? keyboardLayout : undefined}
+                summary={summary}
               />
             </div>
           ))
@@ -1058,10 +1120,13 @@ export default function TypingPage() {
       {!readingMode && (
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-background/90 backdrop-blur-sm">
         <div className="mx-auto flex max-w-4xl items-center gap-6 px-4 py-3">
+          <span className="hidden text-[10px] font-medium uppercase tracking-wide text-muted-foreground sm:inline">
+            This session
+          </span>
           <HudStat label="WPM" value={liveWpm} testId="text-live-wpm" />
           <HudStat label="Accuracy" value={`${liveAccuracy}%`} testId="text-live-accuracy" />
           <HudStat
-            label="Block"
+            label="Position"
             value={`${Math.min(idx + 1, book.blockCount).toLocaleString()} / ${book.blockCount.toLocaleString()}`}
             testId="text-position"
           />

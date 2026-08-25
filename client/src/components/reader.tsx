@@ -15,7 +15,7 @@ import type { BlockLink, BlockView } from '@shared/schema';
  * than a novel.
  */
 
-export type BlockMode = 'done' | 'active' | 'ahead';
+export type BlockMode = 'done' | 'typed' | 'active' | 'ahead';
 
 interface BlockProps {
   block: BlockView;
@@ -36,6 +36,11 @@ interface BlockProps {
    * inline so a reader can see why the reader jumped past this block.
    */
   keyboardLayout?: KeyboardLayout;
+  /**
+   * Per-block WPM/accuracy chip, shown under a block that was just typed
+   * through. Absent for blocks that were skipped or never touched.
+   */
+  summary?: { wpm: number; accuracy: number; keystrokes: number } | null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -521,7 +526,7 @@ function TextBlock({
         heading ? 'mt-10 mb-4 first:mt-0' : 'my-4',
         typeface === 'serif' ? 'font-serif' : 'font-sans',
         heading && 'font-semibold tracking-tight',
-        !active && (mode === 'done' ? 'tw-block-done' : 'tw-block-ahead')
+        !active && modeClass(mode)
       )}
       style={{
         fontSize: heading ? Math.min(30, fontSize + 4) : fontSize,
@@ -544,13 +549,49 @@ function TextBlock({
   );
 }
 
+function modeClass(mode: BlockMode): string {
+  if (mode === 'typed') return 'tw-block-typed';
+  if (mode === 'done') return 'tw-block-done';
+  return 'tw-block-ahead';
+}
+
+/**
+ * A small tag showing how fast and how accurate a block was typed.
+ *
+ * Sits under the finished block, out of the way of the reading flow.
+ */
+function BlockChip({ summary }: { summary: { wpm: number; accuracy: number; keystrokes: number } }) {
+  if (summary.keystrokes < 3) return null;
+  return (
+    <div
+      className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground"
+      data-testid="block-summary"
+    >
+      <span className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2 py-0.5">
+        <span className="font-mono tabular-nums text-foreground">{summary.wpm}</span> wpm
+      </span>
+      <span className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2 py-0.5">
+        <span className="font-mono tabular-nums text-foreground">{summary.accuracy}%</span> accuracy
+      </span>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Dispatcher
  * ------------------------------------------------------------------ */
 
 export const ReaderBlock = memo(function ReaderBlock(props: BlockProps) {
-  if (props.block.kind === 'image') return <Figure block={props.block} mode={props.mode} />;
-  if (props.block.kind === 'embed') return <Embed block={props.block} mode={props.mode} />;
-  if (props.block.kind === 'code') return <CodeBlock {...props} />;
-  return <TextBlock {...props} />;
+  let body: React.ReactNode;
+  if (props.block.kind === 'image') body = <Figure block={props.block} mode={props.mode} />;
+  else if (props.block.kind === 'embed') body = <Embed block={props.block} mode={props.mode} />;
+  else if (props.block.kind === 'code') body = <CodeBlock {...props} />;
+  else body = <TextBlock {...props} />;
+
+  return (
+    <>
+      {body}
+      {props.summary && props.mode === 'typed' ? <BlockChip summary={props.summary} /> : null}
+    </>
+  );
 });
