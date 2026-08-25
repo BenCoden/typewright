@@ -95,6 +95,17 @@ export default function TypingPage() {
   const idxRef = useRef<number | null>(null);
   const [fetchFrom, setFetchFrom] = useState(0);
   const [paused, setPaused] = useState(false);
+  /**
+   * Why the session is paused, so the overlay knows how loudly to interrupt.
+   *
+   * - `manual` (Escape or the Pause button): reader chose to stop; show the
+   *   full overlay with the Library exit.
+   * - `blur` (tab switch): reader left the app; show the full overlay because
+   *   they may not come back for a while.
+   * - `idle` (auto-pause after no keys): still on the page; show only a small
+   *   floating chip so the reader can look around freely.
+   */
+  const [pauseReason, setPauseReason] = useState<'manual' | 'blur' | 'idle' | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [tick, setTick] = useState(0);
   /** A read-only view of the current position — no keystrokes are scored. */
@@ -118,6 +129,16 @@ export default function TypingPage() {
 
   const { data: outline } = useQuery<{ idx: number; section: string }[]>({
     queryKey: ['/api/books', bookId, 'outline'],
+    enabled: Number.isFinite(bookId),
+  });
+
+  /*
+   * Per-block progress from the server. Loads once per book, then the client
+   * writes back on every completion or skip so a page refresh or a book
+   * switch keeps the chips and colours intact.
+   */
+  const { data: serverProgress } = useQuery<import('@shared/schema').BlockProgress[]>({
+    queryKey: ['/api/books', bookId, 'progress'],
     enabled: Number.isFinite(bookId),
   });
 
@@ -300,6 +321,74 @@ export default function TypingPage() {
    */
   const [skippedBlocks, setSkippedBlocks] = useState<Set<number>>(() => new Set());
 
+  /*
+   * Hydrate the two per-block maps whenever fresh progress arrives from the
+   * server. Only fills in rows the client does not already have, so the
+   * optimistic writes made during a live session are preserved.
+   */
+  useEffect(() => {
+    if (!serverProgress?.length) return;
+    setBlockResults((prior) => {
+      const next = { ...prior };
+      let changed = false;
+      for (const row of serverProgress) {
+        if (row.status === 'typed' && !next[row.blockIdx] && row.wpm !== null && row.accuracyBp !== null) {
+          next[row.blockIdx] = {
+            wpm: row.wpm,
+            accuracy: Math.round(row.accuracyBp / 100),
+            durationMs: row.durationMs ?? 0,
+            keystrokes: row.keystrokes ?? 0,
+            errors: row.errors ?? 0,
+          };
+          changed = true;
+        }
+      }
+      return changed ? next : prior;
+    });
+    setSkippedBlocks((prior) => {
+      const next = new Set(prior);
+      let changed = false;
+      for (const row of serverProgress) {
+        if (row.status === 'skipped' && !next.has(row.blockIdx)) {
+          next.add(row.blockIdx);
+          changed = true;
+        }
+      }
+      return changed ? next : prior;
+    });
+  }, [serverProgress]);
+
+  /*
+   * Fire-and-forget POST for a completion or skip. The optimistic client
+   * state has already been updated; if the request fails we simply retry on
+   * the next event.
+   */
+  const persistProgress = useCallback(
+    (payload: {
+      blockIdx: number;
+      status: 'typed' | 'skipped';
+      wpm?: number;
+      accuracyBp?: number;
+      durationMs?: number;
+      keystrokes?: number;
+      errors?: number;
+    }) => {
+      if (!Number.isFinite(bookId)) return;
+      void apiRequest('POST', `/api/books/${bookId}/progress`, {
+        blockIdx: payload.blockIdx,
+        status: payload.status,
+        wpm: payload.wpm ?? null,
+        accuracyBp: payload.accuracyBp ?? null,
+        durationMs: payload.durationMs ?? null,
+        keystrokes: payload.keystrokes ?? null,
+        errors: payload.errors ?? null,
+      }).catch(() => {
+        /* server persistence is opportunistic; the reader keeps typing */
+      });
+    },
+    [bookId]
+  );
+
   const flushSession = useCallback(async () => {
     const metrics = metricsRef.current;
     if (savingRef.current) return;
@@ -373,6 +462,23 @@ export default function TypingPage() {
    * Keyboard
    * ---------------------------------------------------------------- */
 
+  /**
+   * Record a block as skipped. Typed blocks are never marked skipped, so
+   * revisiting a typed block and moving off it does not clear the typed chip.
+   */
+  const markSkipped = useCallback(
+    (blockIdx: number) => {
+      setSkippedBlocks((prior) => {
+        if (prior.has(blockIdx)) return prior;
+        const next = new Set(prior);
+        next.add(blockIdx);
+        return next;
+      });
+      persistProgress({ blockIdx, status: 'skipped' });
+    },
+    [persistProgress]
+  );
+
   /** Moves the cursor to a block, persisting the new position. */
   const goTo = useCallback(
     (target: number) => {
@@ -390,32 +496,14 @@ export default function TypingPage() {
         stateRef.current &&
         !stateRef.current.done
       ) {
-        setSkippedBlocks((prior) => {
-          if (prior.has(current)) return prior;
-          const next = new Set(prior);
-          next.add(current);
-          return next;
-        });
+        markSkipped(current);
       }
       setFetchFrom((from) => (clamped < from || clamped > from + WINDOW - REFETCH_MARGIN ? Math.max(0, clamped - BEHIND) : from));
       setIdx(clamped);
       savePosition(clamped);
     },
-    [savePosition]
+    [savePosition, markSkipped]
   );
-
-  /**
-   * Record a block as skipped. Typed blocks are never marked skipped, so
-   * revisiting a typed block and moving off it does not clear the typed chip.
-   */
-  const markSkipped = useCallback((blockIdx: number) => {
-    setSkippedBlocks((prior) => {
-      if (prior.has(blockIdx)) return prior;
-      const next = new Set(prior);
-      next.add(blockIdx);
-      return next;
-    });
-  }, []);
 
   const advance = useCallback(() => {
     setIdx((current) => {
@@ -493,11 +581,39 @@ export default function TypingPage() {
 
       lastKeyAtRef.current = 0;
       setPaused(true);
+      setPauseReason('idle');
       void flushSession();
     }, 500);
 
     return () => window.clearInterval(interval);
   }, [paused, readingMode, autoPauseMs, flushSession]);
+
+  /*
+   * When the tab is hidden or the window loses focus, pause loudly so the
+   * reader is nudged to reconnect on return. Coming back to the tab does not
+   * un-pause automatically — pressing any key does, mirroring the idle path.
+   */
+  useEffect(() => {
+    if (readingMode) return;
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') {
+        setPaused(true);
+        setPauseReason((prev) => prev === 'manual' ? prev : 'blur');
+        void flushSession();
+      }
+    };
+    const onBlur = () => {
+      setPaused(true);
+      setPauseReason((prev) => prev === 'manual' ? prev : 'blur');
+      void flushSession();
+    };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [readingMode, flushSession]);
 
   /* ---------------------------------------------------------------- *
    * Keyboard
@@ -523,6 +639,7 @@ export default function TypingPage() {
           lastKeyAtRef.current = 0;
           if (!reading) void flushSession();
           setPaused(false);
+          setPauseReason(null);
           return !reading;
         });
         return;
@@ -674,7 +791,11 @@ export default function TypingPage() {
 
       if (event.key === 'Escape') {
         event.preventDefault();
-        setPaused((p) => !p);
+        setPaused((p) => {
+          const next = !p;
+          setPauseReason(next ? 'manual' : null);
+          return next;
+        });
         void flushSession();
         return;
       }
@@ -684,6 +805,7 @@ export default function TypingPage() {
           event.preventDefault();
           lastKeyAtRef.current = 0;
           setPaused(false);
+          setPauseReason(null);
         }
         return;
       }
@@ -735,16 +857,27 @@ export default function TypingPage() {
               next.delete(completedIdx);
               return next;
             });
+            const blockWpm = wpm(correct, durationMs);
+            const blockAccuracy = accuracy(keystrokes, errors);
             setBlockResults((prior) => ({
               ...prior,
               [completedIdx]: {
-                wpm: wpm(correct, durationMs),
-                accuracy: accuracy(keystrokes, errors),
+                wpm: blockWpm,
+                accuracy: blockAccuracy,
                 durationMs,
                 keystrokes,
                 errors,
               },
             }));
+            persistProgress({
+              blockIdx: completedIdx,
+              status: 'typed',
+              wpm: blockWpm,
+              accuracyBp: Math.round(blockAccuracy * 100),
+              durationMs,
+              keystrokes,
+              errors,
+            });
           }
 
           // Let the finished block render once, then move on.
@@ -992,6 +1125,7 @@ export default function TypingPage() {
                   return !reading;
                 });
                 setPaused(false);
+                setPauseReason(null);
               }}
               className={cn(
                 'rounded-md p-2 hover-elevate active-elevate-2',
@@ -1007,7 +1141,11 @@ export default function TypingPage() {
             <button
               type="button"
               onClick={() => {
-                setPaused((p) => !p);
+                setPaused((p) => {
+                  const next = !p;
+                  setPauseReason(next ? 'manual' : null);
+                  return next;
+                });
                 void flushSession();
               }}
               className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
@@ -1175,13 +1313,15 @@ export default function TypingPage() {
       </div>
 
       {/* ---- Paused overlay ---- */}
-      {paused && !readingMode && (
+      {paused && !readingMode && (pauseReason === 'manual' || pauseReason === 'blur') && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur">
           <div className="rounded-xl border border-border bg-card px-8 py-10 text-center shadow-lg">
             <Keyboard className="mx-auto h-7 w-7 text-muted-foreground" />
             <h2 className="mt-4 font-serif text-lg text-foreground">Paused</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Press any key to carry on. Escape toggles this.
+              {pauseReason === 'blur'
+                ? 'Session paused because the tab lost focus. Press any key to carry on.'
+                : 'Press any key to carry on. Escape toggles this.'}
             </p>
             <button
               type="button"
@@ -1196,6 +1336,16 @@ export default function TypingPage() {
               Back to library
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ---- Idle-pause chip (non-blocking) ---- */}
+      {paused && !readingMode && pauseReason === 'idle' && (
+        <div
+          className="fixed bottom-16 left-1/2 z-40 -translate-x-1/2 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground shadow-sm"
+          data-testid="chip-paused-idle"
+        >
+          Paused · press any key to resume
         </div>
       )}
 

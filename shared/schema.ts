@@ -281,6 +281,23 @@ export type Asset = typeof assets.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type Settings = typeof settings.$inferSelect;
 
+/**
+ * Per-block completion state. `typed` blocks carry their WPM/accuracy snapshot;
+ * `skipped` blocks carry only the status flag so the reader can distinguish
+ * a jump from an untouched page.
+ */
+export interface BlockProgress {
+  bookId: number;
+  blockIdx: number;
+  status: 'typed' | 'skipped';
+  wpm: number | null;
+  accuracyBp: number | null;
+  durationMs: number | null;
+  keystrokes: number | null;
+  errors: number | null;
+  updatedAt: number;
+}
+
 /** A block joined with its asset, as the typing view consumes it. */
 export interface BlockView extends Block {
   /** Links found in this block's text, parsed from `linksJson`. */

@@ -8,6 +8,7 @@ import type {
   Asset,
   Block,
   BlockLink,
+  BlockProgress,
   BlockView,
   Book,
   BookSource,
@@ -123,6 +124,24 @@ sqlite.exec(`
     errors_by_key    TEXT    NOT NULL DEFAULT '{}'
   );
   CREATE INDEX IF NOT EXISTS sessions_book_idx ON sessions (book_id);
+
+  /*
+   * Per-block completion record. Written on the first successful completion of
+   * a block and updated to the best-yet WPM/accuracy on later completions. The
+   * status flag lets a jumped-past block be tracked without a summary.
+   */
+  CREATE TABLE IF NOT EXISTS block_progress (
+    book_id     INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    block_idx   INTEGER NOT NULL,
+    status      TEXT    NOT NULL,
+    wpm         INTEGER,
+    accuracy_bp INTEGER,
+    duration_ms INTEGER,
+    keystrokes  INTEGER,
+    errors      INTEGER,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (book_id, block_idx)
+  );
 
   CREATE TABLE IF NOT EXISTS settings (
     id                    INTEGER PRIMARY KEY,
@@ -278,6 +297,10 @@ export interface IStorage {
   getOutline(bookId: number): { idx: number; section: string; kind: string }[];
   getAsset(id: number): Asset | undefined;
   createSession(input: Omit<Session, 'id'>): Session;
+  /** Every completion or explicit skip the reader has recorded for a book. */
+  listBlockProgress(bookId: number): BlockProgress[];
+  /** Persist that a block was typed through or deliberately jumped past. */
+  upsertBlockProgress(entry: BlockProgress): void;
   getSettings(): Settings;
   updateSettings(patch: Partial<Settings>): Settings;
   getStats(): StatsSummary;
@@ -694,6 +717,48 @@ class SqliteStorage implements IStorage {
 
   createSession(input: Omit<Session, 'id'>): Session {
     return db.insert(sessions).values(input).returning().get();
+  }
+
+  listBlockProgress(bookId: number): BlockProgress[] {
+    const rows = sqlite
+      .prepare(
+        'SELECT block_idx AS blockIdx, status, wpm, accuracy_bp AS accuracyBp, duration_ms AS durationMs, keystrokes, errors, updated_at AS updatedAt FROM block_progress WHERE book_id = ?'
+      )
+      .all(bookId) as Array<Omit<BlockProgress, 'bookId'>>;
+    return rows.map((row) => ({ ...row, bookId }));
+  }
+
+  upsertBlockProgress(entry: BlockProgress): void {
+    /*
+     * Keep the best result. A later, slower attempt at a block should not
+     * overwrite a faster one; but a first successful completion always wins
+     * over a prior skip, and vice versa if the reader skips a typed block.
+     */
+    sqlite
+      .prepare(
+        `INSERT INTO block_progress
+           (book_id, block_idx, status, wpm, accuracy_bp, duration_ms, keystrokes, errors, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(book_id, block_idx) DO UPDATE SET
+           status      = excluded.status,
+           wpm         = COALESCE(MAX(block_progress.wpm, excluded.wpm), excluded.wpm),
+           accuracy_bp = COALESCE(MAX(block_progress.accuracy_bp, excluded.accuracy_bp), excluded.accuracy_bp),
+           duration_ms = COALESCE(excluded.duration_ms, block_progress.duration_ms),
+           keystrokes  = COALESCE(excluded.keystrokes, block_progress.keystrokes),
+           errors      = COALESCE(excluded.errors, block_progress.errors),
+           updated_at  = excluded.updated_at`
+      )
+      .run(
+        entry.bookId,
+        entry.blockIdx,
+        entry.status,
+        entry.wpm,
+        entry.accuracyBp,
+        entry.durationMs,
+        entry.keystrokes,
+        entry.errors,
+        entry.updatedAt
+      );
   }
 
   getSettings(): Settings {

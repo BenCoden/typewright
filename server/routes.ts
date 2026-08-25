@@ -620,6 +620,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /* ---------------------------------------------------------------- *
+   * Per-block progress
+   * ---------------------------------------------------------------- */
+
+  app.get('/api/books/:id/progress', (req, res) => {
+    const id = idParam.safeParse(req.params.id);
+    if (!id.success) return fail(res, 400, 'Invalid book id.');
+    if (!storage.getBook(id.data)) return fail(res, 404, 'Book not found.');
+    res.json(storage.listBlockProgress(id.data));
+  });
+
+  app.post('/api/books/:id/progress', (req, res) => {
+    const id = idParam.safeParse(req.params.id);
+    if (!id.success) return fail(res, 400, 'Invalid book id.');
+    if (!storage.getBook(id.data)) return fail(res, 404, 'Book not found.');
+
+    const body = z
+      .object({
+        blockIdx: z.number().int().min(0),
+        status: z.enum(['typed', 'skipped']),
+        wpm: z.number().int().min(0).nullable().default(null),
+        accuracyBp: z.number().int().min(0).max(10000).nullable().default(null),
+        durationMs: z.number().int().min(0).nullable().default(null),
+        keystrokes: z.number().int().min(0).nullable().default(null),
+        errors: z.number().int().min(0).nullable().default(null),
+      })
+      .safeParse(req.body);
+    if (!body.success) return fail(res, 400, 'Invalid progress payload.');
+
+    storage.upsertBlockProgress({
+      bookId: id.data,
+      ...body.data,
+      updatedAt: Date.now(),
+    });
+    res.status(204).end();
+  });
+
+  /* ---------------------------------------------------------------- *
    * Settings
    * ---------------------------------------------------------------- */
 
