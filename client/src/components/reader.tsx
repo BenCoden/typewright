@@ -105,6 +105,24 @@ const CharRun = memo(function CharRun({
         const showAsError = status === 'wrong' && (char === ' ' || isNewline);
         const wordUnderline = markIncorrectWords && wordHasError.has(i) && status !== 'wrong';
 
+        /*
+         * When a wrong keystroke was recorded, show that character above the
+         * expected one so the reader sees what they actually typed rather than
+         * only that the expected character was missed. Newlines and spaces are
+         * expanded to visible glyphs so an errant Enter or Space is not silent.
+         */
+        const typedChar = state.typed[i] ?? '';
+        const wrongTyped =
+          status === 'wrong' && typedChar
+            ? typedChar === ' '
+              ? '␣'
+              : typedChar === '\n'
+                ? '⏎'
+                : typedChar === '\t'
+                  ? '⇥'
+                  : typedChar
+            : null;
+
         // The return glyph is drawn before the break so it ends the line it
         // belongs to, and stays out of the caret's ::before slot.
         const body =
@@ -132,6 +150,7 @@ const CharRun = memo(function CharRun({
               keyboardLayout && !isTypeable(char, keyboardLayout) && 'tw-untypeable'
             )}
           >
+            {wrongTyped != null && <span className="tw-char-typed">{wrongTyped}</span>}
             {body}
           </span>
         );

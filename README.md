@@ -112,6 +112,10 @@ The comparison is against the text Typewright extracted, not the raw HTML, so an
 
 The library page has a small **Where to get books** panel with a set of well-known DRM-free stores and free-text archives pre-pinned: Project Gutenberg, Standard Ebooks, eBooks.com, Smashwords, Leanpub, Humble Bundle, StoryBundle, Manning, Open Library, Unglue.it, DigiLibraries, OpenStax, Internet Sacred Text Archive, plus links out to Entertrained's own list and the Guide to DRM-Free Living. Pins are pins — clicking opens the site in a new tab — and any pin can be removed. Adding a new one takes a name and a URL, with an optional note.
 
+### Wrong keys are shown
+
+A wrong keystroke leaves a small chip above the expected character, spelling out the key that was actually pressed. Spaces come through as `␣`, tabs as `⇥`, and Enter as `⏎`, so an errant modifier is not invisible. The expected character stays in place beneath the chip, so the intended word is still readable at a glance.
+
 ### Skip untypeable blocks
 
 A transliterated scripture chapter, a Wikipedia article about a Danish town, and a Learn code sample with a smart quote all share one problem: they include characters a US keyboard cannot type. The **Keyboard layout** setting tells Typewright which characters your keyboard reaches — **US / QWERTY**, **US International**, or **Every character** — and the **Skip untypeable blocks** switch auto-advances past prose or listings that go outside the layout.

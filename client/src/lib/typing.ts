@@ -19,6 +19,14 @@ export interface BlockState {
   /** Exactly what must be typed. */
   expected: string;
   status: CharStatus[];
+  /**
+   * The character actually typed at each position when the status is `wrong`.
+   *
+   * Storing what the user typed — not just that they were wrong — lets the
+   * reader show the mistake in place so it is obvious which key slipped.
+   * Slots at every other status are empty strings.
+   */
+  typed: string[];
   /** Index of the next character to type. */
   pos: number;
   /** True once pos reaches the end with no unresolved mistakes. */
@@ -67,6 +75,7 @@ export function createBlockState(expected: string, options: EngineOptions): Bloc
   const state: BlockState = {
     expected,
     status: Array<CharStatus>(expected.length).fill('pending'),
+    typed: Array<string>(expected.length).fill(''),
     pos: 0,
     done: expected.length === 0,
   };
@@ -113,6 +122,7 @@ export function applyKey(previous: BlockState, key: string, options: EngineOptio
   const state: BlockState = {
     expected: previous.expected,
     status: [...previous.status],
+    typed: [...previous.typed],
     pos: previous.pos,
     done: previous.done,
   };
@@ -142,6 +152,8 @@ export function applyKey(previous: BlockState, key: string, options: EngineOptio
     let filled = 0;
     while (state.pos < state.expected.length && state.expected[state.pos] === ' ' && filled < 8) {
       state.status[state.pos] = 'correct';
+    state.typed[state.pos] = '';
+      state.typed[state.pos] = '';
       state.pos += 1;
       filled += 1;
     }
@@ -158,6 +170,7 @@ export function applyKey(previous: BlockState, key: string, options: EngineOptio
 
   if (matches) {
     state.status[state.pos] = 'correct';
+    state.typed[state.pos] = '';
     state.pos += 1;
 
     let correctChars = 1;
@@ -172,6 +185,7 @@ export function applyKey(previous: BlockState, key: string, options: EngineOptio
   // 'fix' repairs the character so the page stays readable, but the error is
   // still counted and the repaired character earns no credit.
   state.status[state.pos] = options.mistakeMode === 'fix' ? 'correct' : 'wrong';
+  state.typed[state.pos] = options.mistakeMode === 'fix' ? '' : key;
 
   if (options.mistakeMode !== 'block') {
     state.pos += 1;
@@ -223,9 +237,13 @@ export function skipLine(previous: BlockState, options: EngineOptions): BlockSta
   if (nextBreak === -1) return previous;
 
   const status = [...previous.status];
-  for (let i = previous.pos; i <= nextBreak; i += 1) status[i] = 'skipped';
+  const typed = [...previous.typed];
+  for (let i = previous.pos; i <= nextBreak; i += 1) {
+    status[i] = 'skipped';
+    typed[i] = '';
+  }
 
-  const state: BlockState = { ...previous, status, pos: nextBreak + 1, done: false };
+  const state: BlockState = { ...previous, status, typed, pos: nextBreak + 1, done: false };
 
   // Land on the first real character of the next line, not its indentation.
   if (options.autoIndent) consumeIndent(state);

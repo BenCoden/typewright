@@ -346,6 +346,30 @@
   .tw-char {
     /* Keeps zero-width characters (spaces, newlines) selectable for the caret */
     white-space: pre-wrap;
+    position: relative;
+  }
+
+  /*
+   * The character the user actually typed on a mistake, drawn as a small chip
+   * above the expected one. Kept small and pushed above the line so it does
+   * not shift text alignment — the reader still sees the intended word.
+   */
+  .tw-char-typed {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 0 3px;
+    margin-bottom: 2px;
+    font-size: 0.65em;
+    line-height: 1.2;
+    border-radius: 3px;
+    background: hsl(var(--destructive) / 0.9);
+    color: hsl(var(--destructive-foreground));
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 500;
+    white-space: pre;
+    pointer-events: none;
   }
 
   /*
