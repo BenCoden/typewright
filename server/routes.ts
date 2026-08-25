@@ -101,6 +101,7 @@ function persistWebPage(page: WebPage): {
     title: page.collection.title,
     homeUrl: page.collection.homeUrl,
     site: page.collection.site,
+    rootUrl: page.collection.rootUrl,
     toc: page.collection.toc,
   });
 
@@ -109,6 +110,19 @@ function persistWebPage(page: WebPage): {
 
   // The card shows the hostname already; the doc set is the useful subtitle.
   page.author = page.collection.title === page.collection.site ? page.author : page.collection.title;
+
+  /*
+   * Sites suffix every <title> with their own name — "Introduction | Wisej.NET".
+   * The doc set is already named beside the page, so the suffix is noise.
+   */
+  const suffixes = [page.collection.title, page.collection.site.replace(/^docs?\./i, '')];
+  for (const suffix of suffixes) {
+    const trimmed = page.title.replace(
+      new RegExp(`\\s*[|\u2013\u2014\u00b7-]\\s*${escapeForTitle(suffix)}\\s*$`, 'i'),
+      ''
+    );
+    if (trimmed && trimmed.length >= 3) page.title = trimmed;
+  }
 
   const imported = persist(page, page.sourceUrl, {
     collectionId: collection.id,
@@ -120,6 +134,10 @@ function persistWebPage(page: WebPage): {
   });
 
   return { imported, collectionId: collection.id, adapter: page.adapter };
+}
+
+function escapeForTitle(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** TOC hrefs and page URLs differ by trailing slashes and index documents. */
@@ -353,13 +371,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get('/api/collections', (_req, res) => {
-    res.json(
-      storage.listCollections().map((collection) => ({
-        ...collection,
-        pageCount: storage.listCollectionBooks(collection.id).length,
-        tocCount: (JSON.parse(collection.tocJson) as TocEntry[]).filter((e) => e.url).length,
-      }))
-    );
+    res.json(storage.listCollectionSummaries());
+  });
+
+  /** Removing a doc set removes every page of it that was imported. */
+  app.delete('/api/collections/:id', (req, res) => {
+    const id = idParam.safeParse(req.params.id);
+    if (!id.success) return fail(res, 400, 'Invalid collection id.');
+
+    const pages = storage.listCollectionBooks(id.data);
+    if (!pages.length) return fail(res, 404, 'Doc set not found.');
+
+    for (const page of pages) storage.deleteBook(page.id);
+    res.json({ removed: pages.length });
+  });
+
+  /** The pages of one doc set that are held locally. */
+  app.get('/api/collections/:id/pages', (req, res) => {
+    const id = idParam.safeParse(req.params.id);
+    if (!id.success) return fail(res, 400, 'Invalid collection id.');
+    res.json(storage.listCollectionBooks(id.data));
   });
 
   /** Everything the typing view needs to offer page navigation. */

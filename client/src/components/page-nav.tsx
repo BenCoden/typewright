@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Check, CornerDownLeft, Loader2, Search, X } from 'lucide-react';
+import { Check, CornerDownLeft, ExternalLink, Loader2, Search, X } from 'lucide-react';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
 import type { PageContext, TocEntry } from '@shared/schema';
@@ -91,9 +91,22 @@ export function ContentsPanel({
                 {value === 'contents' ? 'Contents' : 'This page'}
               </button>
             ))}
-            <span className="ml-auto truncate px-2 text-xs text-muted-foreground">
+            <span className="ml-auto min-w-0 truncate px-2 text-xs text-muted-foreground">
               {context.collection.title}
             </span>
+            {currentUrl && (
+              <a
+                href={currentUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="shrink-0 rounded-md p-1.5 text-muted-foreground hover-elevate active-elevate-2"
+                aria-label="Open this page on the site"
+                title={currentUrl}
+                data-testid="button-panel-open-source"
+              >
+                <ExternalLink className="h-4 w-4" />
+              </a>
+            )}
             <button
               type="button"
               onClick={onClose}

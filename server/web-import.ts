@@ -49,7 +49,7 @@ export interface WebPage extends ParsedBook {
   adapter: 'git-markdown' | 'wiki' | 'readable' | 'rendered';
   contentHash: string;
   /** The documentation set this page belongs to. */
-  collection: { title: string; site: string; homeUrl: string; toc: TocEntry[] };
+  collection: { title: string; site: string; homeUrl: string; rootUrl: string; toc: TocEntry[] };
 }
 
 /* ------------------------------------------------------------------ *
@@ -230,6 +230,83 @@ async function downloadImage(reference: string, ctx: MarkdownContext): Promise<s
 
   ctx.images.set(key, { data, mime, ...imageSize(data) });
   return key;
+}
+
+/** The video id of a known player URL, when there is one. */
+function videoId(src: string): { provider: 'youtube' | 'vimeo'; id: string } | null {
+  try {
+    const url = new URL(src);
+
+    if (/(^|\.)youtu\.be$/i.test(url.hostname)) {
+      const id = url.pathname.split('/').filter(Boolean)[0];
+      return id ? { provider: 'youtube', id } : null;
+    }
+    if (/(^|\.)youtube(-nocookie)?\.com$/i.test(url.hostname)) {
+      const id = url.pathname.match(/\/embed\/([\w-]+)/)?.[1] ?? url.searchParams.get('v');
+      return id ? { provider: 'youtube', id } : null;
+    }
+    if (/(^|\.)vimeo\.com$/i.test(url.hostname)) {
+      const id = url.pathname.split('/').filter(Boolean).pop();
+      return id && /^\d+$/.test(id) ? { provider: 'vimeo', id } : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Fetches a poster frame and a real title for an embedded video.
+ *
+ * The poster is stored with the page like any other figure, so the block looks
+ * like a video before anything is loaded from the network, and the caption says
+ * what the video is rather than "YouTube video". oEmbed is a documented endpoint
+ * on both providers and needs no key.
+ */
+async function resolveEmbedPoster(
+  src: string,
+  ctx: MarkdownContext
+): Promise<{ imageKey?: string; title?: string }> {
+  const video = videoId(src);
+  if (!video) return {};
+
+  const endpoint =
+    video.provider === 'youtube'
+      ? `https://www.youtube.com/oembed?url=${encodeURIComponent(
+          `https://www.youtube.com/watch?v=${video.id}`
+        )}&format=json`
+      : `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(
+          `https://vimeo.com/${video.id}`
+        )}`;
+
+  let title: string | undefined;
+  let thumbnail: string | undefined;
+
+  try {
+    const meta = await fetchJson<{ title?: string; thumbnail_url?: string }>(endpoint);
+    title = meta.title;
+    thumbnail = meta.thumbnail_url;
+  } catch {
+    // oEmbed is a nicety; a YouTube still can be addressed directly.
+  }
+
+  if (!thumbnail && video.provider === 'youtube') {
+    thumbnail = `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
+  }
+  if (!thumbnail) return { title };
+
+  // Poster filenames repeat across videos, so key on the id we already have.
+  try {
+    const key = `embed-${video.provider}-${video.id}${path.extname(new URL(thumbnail).pathname) || '.jpg'}`;
+    if (!ctx.images.has(key)) {
+      const data = await fetchBinary(thumbnail);
+      if (!data) return { title };
+      ctx.images.set(key, { data, mime: MIME_BY_EXT[path.extname(key).toLowerCase()] ?? 'image/jpeg', ...imageSize(data) });
+    }
+    return { imageKey: key, title };
+  } catch {
+    return { title };
+  }
 }
 
 /**
@@ -839,6 +916,16 @@ async function blocksFromHtmlElement(
     (src) => keyBySrc.get(src) ?? null,
     pageUrl
   );
+
+  // Embeds get a poster frame so they read as video before anything loads.
+  for (const block of blocks) {
+    if (block.kind !== 'embed' || !block.src) continue;
+
+    const { imageKey, title } = await resolveEmbedPoster(block.src, ctx);
+    if (imageKey) block.imageKey = imageKey;
+    if (title && (!block.text || /^(youtube|vimeo)\b/i.test(block.text))) block.text = title;
+  }
+
   return { blocks };
 }
 
@@ -850,14 +937,35 @@ function siteName(url: string): string {
   return new URL(url).hostname.replace(/^www\./, '');
 }
 
-/** A readable name for the doc set a page belongs to. */
+/**
+ * A readable name for the doc set a page belongs to.
+ *
+ * The first top-level contents entry is the best answer when it is a real page —
+ * "C# documentation". Collapsible sidebars start with a group label instead
+ * ("Welcome", "Start") which changes as you move around, so those fall through
+ * to the site's own name.
+ */
 function collectionTitle(html: string, url: string, toc: TocEntry[]): string {
-  const first = toc.find((entry) => entry.depth === 0 && entry.title);
+  const first = toc.find((entry) => entry.depth === 0 && entry.title && entry.url);
   if (first) return first.title;
 
   const siteTitle = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '';
   const trimmed = siteTitle.split(/[|\u2013\u2014]/).pop()?.trim();
   return trimmed || siteName(url);
+}
+
+/**
+ * The stable identity of a doc set: the first page its contents point at, or
+ * failing that the section of the site the page lives in.
+ */
+function collectionRoot(url: string, toc: TocEntry[]): string {
+  const first = toc.find((entry) => entry.url);
+  if (first?.url) return first.url.replace(/[#?].*$/, '').replace(/\/+$/, '').toLowerCase();
+
+  // No contents to go on: group by the first path segment, e.g. /docs.
+  const parsed = new URL(url);
+  const segment = parsed.pathname.split('/').filter(Boolean)[0] ?? '';
+  return `${parsed.origin}/${segment}`.toLowerCase();
 }
 
 /**
@@ -932,6 +1040,7 @@ export async function importUrl(rawUrl: string): Promise<WebPage> {
             title: collectionTitle(html, sourceUrl, toc),
             site,
             homeUrl: sourceUrl,
+            rootUrl: collectionRoot(sourceUrl, toc),
             toc,
           },
         };
@@ -997,6 +1106,7 @@ export async function importUrl(rawUrl: string): Promise<WebPage> {
       title: collectionTitle(html, sourceUrl, toc),
       site,
       homeUrl: sourceUrl,
+      rootUrl: collectionRoot(sourceUrl, toc),
       toc,
     },
   };
@@ -1080,6 +1190,7 @@ async function tryWiki(
         title: site,
         site,
         homeUrl: `${url.origin}/wiki/`,
+        rootUrl: `${url.origin}/wiki`.toLowerCase(),
         // A wiki has no linear TOC; navigation comes from its own links.
         toc: [],
       },

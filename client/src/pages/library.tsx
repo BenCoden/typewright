@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link } from 'wouter';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
@@ -6,8 +6,10 @@ import {
   BookOpen,
   Code2,
   ClipboardPaste,
+  ExternalLink,
   FolderOpen,
   Globe,
+  Layers,
   RefreshCw,
   Image as ImageIcon,
   Loader2,
@@ -18,7 +20,7 @@ import { API_BASE, apiRequest, assetUrl, queryClient } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
 import { EmptyState } from '@/components/chrome';
 import { useToast } from '@/hooks/use-toast';
-import type { Book, ImportResult } from '@shared/schema';
+import type { Book, CollectionSummary, ImportResult } from '@shared/schema';
 
 const ACCEPT = '.epub,.pdf,.txt,.md,.markdown,.html,.htm';
 
@@ -37,12 +39,21 @@ export default function LibraryPage() {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [url, setUrl] = useState('');
+
   const [paste, setPaste] = useState({ title: '', text: '', asCode: false });
 
   const { data: books, isLoading } = useQuery<Book[]>({ queryKey: ['/api/books'] });
   const { data: hostFolder } = useQuery<{ dir: string | null; files: { name: string; bytes: number }[] }>(
     { queryKey: ['/api/library'] }
   );
+  const { data: collections } = useQuery<CollectionSummary[]>({ queryKey: ['/api/collections'] });
+
+  /*
+   * A doc set gets one library entry however many of its pages are held, so the
+   * pages belonging to one are not listed again beside it. What is left are the
+   * books that came off the disk.
+   */
+  const fileBooks = useMemo(() => (books ?? []).filter((book) => !book.collectionId), [books]);
 
   const importFiles = useMutation({
     mutationFn: async (files: File[]) => {
@@ -152,6 +163,16 @@ export default function LibraryPage() {
     },
     onError: (error: Error) =>
       toast({ title: 'Refresh failed', description: error.message, variant: 'destructive' }),
+  });
+
+  const removeSet = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest('DELETE', `/api/collections/${id}`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/books'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/collections'] });
+    },
   });
 
   const remove = useMutation({
@@ -380,21 +401,30 @@ export default function LibraryPage() {
         </div>
       )}
 
-      {/* ---- Books ---- */}
+      {/* ---- Library ---- */}
       {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {[0, 1, 2].map((i) => (
             <div key={i} className="h-44 animate-pulse rounded-lg bg-muted" />
           ))}
         </div>
-      ) : (books?.length ?? 0) === 0 ? (
+      ) : fileBooks.length === 0 && (collections?.length ?? 0) === 0 ? (
         <EmptyState icon={BookOpen} title="Nothing imported yet">
-          Drop an EPUB above to get started. Everything is parsed on this machine and stored in a
-          local SQLite file — no account, no upload, no network.
+          Paste a documentation link or drop an EPUB above. Everything is parsed on this machine and
+          stored in a local SQLite file — no account, no upload, no network.
         </EmptyState>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {books!.map((book) => (
+          {collections?.map((collection) => (
+            <CollectionCard
+              key={`c${collection.id}`}
+              collection={collection}
+              onDelete={() => removeSet.mutate(collection.id)}
+              onRefresh={() => refresh.mutate(collection.resumeBookId)}
+              refreshing={refresh.isPending && refresh.variables === collection.resumeBookId}
+            />
+          ))}
+          {fileBooks.map((book) => (
             <BookCard
               key={book.id}
               book={book}
@@ -405,6 +435,126 @@ export default function LibraryPage() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A documentation set as one library entry.
+ *
+ * Progress is the sum across every page held locally, and opening it resumes on
+ * the page last read rather than starting over at whichever page was pasted in
+ * first. The pages themselves are reached from inside, through the contents.
+ */
+function CollectionCard({
+  collection,
+  onDelete,
+  onRefresh,
+  refreshing,
+}: {
+  collection: CollectionSummary;
+  onDelete: () => void;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  const progress = Math.min(
+    100,
+    Math.round((collection.positionSum / Math.max(1, collection.blockCount - collection.pageCount)) * 100)
+  );
+
+  return (
+    <div
+      className="group relative flex flex-col overflow-hidden rounded-lg border border-card-border bg-card"
+      data-testid={`card-collection-${collection.id}`}
+    >
+      <Link href={`/type/${collection.resumeBookId}`} className="flex flex-1 flex-col">
+        <div className="flex gap-4 p-4">
+          <div className="flex h-24 w-16 shrink-0 items-center justify-center rounded border border-border bg-muted">
+            <Layers className="h-5 w-5 text-muted-foreground" />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <h3
+              className="line-clamp-2 font-serif text-base font-semibold leading-snug text-foreground"
+              data-testid={`text-collection-${collection.id}`}
+            >
+              {collection.title}
+            </h3>
+            <p className="mt-1 truncate text-xs text-muted-foreground">
+              {collection.pageCount} of {collection.tocCount || collection.pageCount} pages
+            </p>
+
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span className="uppercase tracking-wide">{collection.site}</span>
+              {collection.codeBlockCount > 0 && (
+                <span className="flex items-center gap-1">
+                  <Code2 className="h-3 w-3" />
+                  {collection.codeBlockCount}
+                </span>
+              )}
+              {collection.imageCount > 0 && (
+                <span className="flex items-center gap-1">
+                  <ImageIcon className="h-3 w-3" />
+                  {collection.imageCount}
+                </span>
+              )}
+              <span>{Math.round(collection.wordCount / 1000)}k words</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-auto px-4 pb-4">
+          <p className="mb-2 truncate text-xs text-muted-foreground">
+            <span className="text-foreground">Resume:</span> {collection.resumeTitle}
+          </p>
+          <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+            <div className="h-full rounded-full bg-primary" style={{ width: `${progress}%` }} />
+          </div>
+          <div className="mt-2 flex justify-between text-xs text-muted-foreground">
+            <span>{progress}% typed</span>
+            <span className="font-mono">
+              {collection.positionSum.toLocaleString()} / {collection.blockCount.toLocaleString()}
+            </span>
+          </div>
+        </div>
+      </Link>
+
+      <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        {collection.resumeUrl && (
+          <a
+            href={collection.resumeUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-md bg-card/80 p-1.5 text-muted-foreground hover-elevate"
+            aria-label={`Open ${collection.resumeTitle} on ${collection.site}`}
+            title="Open the original page"
+            data-testid={`button-open-source-${collection.id}`}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        )}
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={refreshing}
+          className="rounded-md bg-card/80 p-1.5 text-muted-foreground hover-elevate"
+          aria-label={`Check ${collection.resumeTitle} for updates`}
+          title="Check the current page for updates"
+          data-testid={`button-refresh-collection-${collection.id}`}
+        >
+          <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} />
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          className="rounded-md bg-card/80 p-1.5 text-muted-foreground hover-elevate"
+          aria-label={`Remove ${collection.title} and its ${collection.pageCount} pages`}
+          title="Remove this doc set"
+          data-testid={`button-delete-collection-${collection.id}`}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
   );
 }

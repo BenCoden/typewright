@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { ImageOff, Play } from 'lucide-react';
 import { assetUrl } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
@@ -234,32 +234,71 @@ function CodeBlock({ block, mode, state, fontSize, markIncorrectWords, showNewli
  * Embedded media
  * ------------------------------------------------------------------ */
 
-/** Rewrites a watch URL into something that can sit in an iframe. */
-function embedSrc(src: string): string | null {
+/**
+ * Rewrites a player URL into an embed that autoplays on click.
+ *
+ * `youtube-nocookie` refuses to start inline in a lot of contexts and falls back
+ * to its own "watch on YouTube" card, so the plain embed host is used with
+ * autoplay — the load already follows a click, which is the gesture browsers
+ * want before starting media.
+ */
+function embedSrc(src: string, autoplay: boolean): string | null {
   try {
     const url = new URL(src);
+    const id =
+      /(^|\.)youtu\.be$/i.test(url.hostname)
+        ? url.pathname.split('/').filter(Boolean)[0]
+        : /(^|\.)youtube(-nocookie)?\.com$/i.test(url.hostname)
+          ? url.pathname.match(/\/embed\/([\w-]+)/)?.[1] ?? url.searchParams.get('v')
+          : null;
 
-    if (/(^|\.)youtu\.be$/i.test(url.hostname)) {
-      return `https://www.youtube-nocookie.com/embed${url.pathname}`;
-    }
-    if (/(^|\.)youtube(-nocookie)?\.com$/i.test(url.hostname)) {
-      const id = url.searchParams.get('v');
-      return id ? `https://www.youtube-nocookie.com/embed/${id}` : url.toString();
-    }
-    if (/(^|\.)vimeo\.com$/i.test(url.hostname) && !url.hostname.startsWith('player.')) {
-      return `https://player.vimeo.com/video${url.pathname}`;
+    if (id) {
+      const params = new URLSearchParams({ rel: '0', playsinline: '1', modestbranding: '1' });
+      if (autoplay) params.set('autoplay', '1');
+      return `https://www.youtube.com/embed/${id}?${params}`;
     }
 
+    if (/(^|\.)vimeo\.com$/i.test(url.hostname)) {
+      const vimeoId = url.pathname.split('/').filter(Boolean).pop();
+      if (vimeoId && /^\d+$/.test(vimeoId)) {
+        return `https://player.vimeo.com/video/${vimeoId}${autoplay ? '?autoplay=1' : ''}`;
+      }
+    }
+
+    if (autoplay) url.searchParams.set('autoplay', '1');
     return url.toString();
   } catch {
     return null;
   }
 }
 
-/** A video or interactive sample from the page. Watched, never typed. */
+/** The page to open when inline playback is refused. */
+function watchUrl(src: string): string {
+  try {
+    const url = new URL(src);
+    const id = url.pathname.match(/\/embed\/([\w-]+)/)?.[1];
+    if (id && /youtube/i.test(url.hostname)) return `https://www.youtube.com/watch?v=${id}`;
+    return src;
+  } catch {
+    return src;
+  }
+}
+
+/**
+ * A video or interactive sample from the page. Watched, never typed.
+ *
+ * Nothing is loaded from the video host until you click: the poster frame was
+ * downloaded with the page, so the block looks like a video offline and while
+ * you are typing past it. Some videos are restricted by their owner to specific
+ * sites and will refuse to start anywhere else — the caption keeps a direct link
+ * for that case.
+ */
 function Embed({ block, mode }: { block: BlockView; mode: BlockMode }) {
-  const src = block.src ? embedSrc(block.src) : null;
+  const [playing, setPlaying] = useState(false);
+
+  const src = block.src ? embedSrc(block.src, playing) : null;
   const isVideoFile = Boolean(block.src && /\.(mp4|webm|ogg|mov)(\?|$)/i.test(block.src));
+  const caption = block.text || 'Embedded media';
 
   return (
     <figure
@@ -269,42 +308,73 @@ function Embed({ block, mode }: { block: BlockView; mode: BlockMode }) {
       )}
       data-testid={`embed-block-${block.idx}`}
     >
-      {src ? (
-        isVideoFile ? (
-          <video src={src} controls preload="metadata" className="aspect-video w-full bg-black" />
-        ) : (
-          <iframe
-            src={src}
-            title={block.text || 'Embedded media'}
-            loading="lazy"
-            allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            allowFullScreen
-            referrerPolicy="strict-origin-when-cross-origin"
-            className="aspect-video w-full border-0 bg-black"
-          />
-        )
-      ) : (
+      {!src ? (
         <div className="flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground">
           <Play className="h-4 w-4" />
           Media could not be loaded
         </div>
+      ) : isVideoFile ? (
+        <video src={src} controls preload="metadata" className="aspect-video w-full bg-black" />
+      ) : playing ? (
+        <iframe
+          src={src}
+          title={caption}
+          allow="autoplay; fullscreen; encrypted-media; picture-in-picture; clipboard-write"
+          allowFullScreen
+          className="aspect-video w-full border-0 bg-black"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setPlaying(true)}
+          className="group relative block aspect-video w-full bg-black"
+          aria-label={`Play ${caption}`}
+          data-testid={`button-play-${block.idx}`}
+        >
+          {block.asset ? (
+            <img
+              src={assetUrl(block.asset.id)}
+              alt=""
+              crossOrigin="anonymous"
+              loading="lazy"
+              className="h-full w-full object-cover opacity-90 transition-opacity group-hover:opacity-100"
+            />
+          ) : (
+            <span className="absolute inset-0 bg-gradient-to-br from-secondary to-muted" />
+          )}
+
+          <span className="absolute inset-0 flex items-center justify-center">
+            <span className="flex h-16 w-16 items-center justify-center rounded-full bg-background/85 shadow-lg transition-transform group-hover:scale-110">
+              <Play className="ml-0.5 h-6 w-6 fill-current text-foreground" />
+            </span>
+          </span>
+        </button>
       )}
 
       <figcaption className="flex items-center justify-between gap-3 border-t border-card-border px-4 py-3 text-sm text-muted-foreground">
-        <span className="truncate">{block.text || 'Embedded media'}</span>
+        <span className="truncate">{caption}</span>
         {block.src && (
           <a
-            href={block.src}
+            href={watchUrl(block.src)}
             target="_blank"
             rel="noreferrer"
             className="shrink-0 text-xs underline decoration-dotted underline-offset-2 hover:text-foreground"
           >
-            Open on the site
+            Watch on {hostLabel(block.src)}
           </a>
         )}
       </figcaption>
     </figure>
   );
+}
+
+function hostLabel(src: string): string {
+  try {
+    const host = new URL(src).hostname.replace(/^www\./, '').replace(/-nocookie/, '');
+    return host.split('.').slice(-2, -1)[0] ?? host;
+  } catch {
+    return 'the site';
+  }
 }
 
 /* ------------------------------------------------------------------ *

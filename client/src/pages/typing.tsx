@@ -7,6 +7,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  ExternalLink,
   Link2,
   Keyboard,
   List,
@@ -712,6 +713,19 @@ export default function TypingPage() {
             </div>
           </div>
 
+          {book.sourceUrl && (
+            <a
+              href={book.sourceUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
+              aria-label={`Open ${book.title} on ${new URL(book.sourceUrl).hostname}`}
+              title={book.sourceUrl}
+              data-testid="button-open-source"
+            >
+              <ExternalLink className="h-4 w-4" />
+            </a>
+          )}
           {pageContext && (
             <>
               <button

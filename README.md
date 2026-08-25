@@ -55,6 +55,10 @@ Paste a link on the library page and Typewright types the article — not the si
 
 One page is imported at a time, but its table of contents comes with it. Every entry in that TOC is reachable from the keyboard, and an entry you have not read yet is fetched the moment you open it. Pasting one link therefore gives you the whole doc set without downloading it.
 
+**A doc set is one entry in the library, not one per page.** Navigating the contents adds pages inside that entry; progress on the card is the sum across every page held, and opening it resumes on the page you were last reading. A doc set is identified by its host plus the root of its own contents, so the same set stays together no matter which page you paste in first. Removing the entry removes every page of it.
+
+The external-link button — on the library card, in the typing header, and in the contents panel — opens the original page on the site.
+
 ### How a page is read
 
 Typewright picks a route per site, best first:
@@ -70,7 +74,11 @@ Microsoft Learn is worth calling out: the page you see in a browser is a JavaScr
 
 ### Media and links
 
-Figures, screenshots, and embedded video come across with the page. A YouTube or Vimeo embed becomes a player you can watch in place; it is shown, never typed, the same as a figure.
+Figures, screenshots, and embedded video come across with the page. All of it is shown, never typed, the same as a figure.
+
+A video embed is click-to-play. Its poster frame and real title are fetched at import time through the provider's oEmbed endpoint and stored with the page, so the block looks like a video with nothing loaded from the video host until you click it — and it still looks right offline. Clicking mounts the player with autoplay.
+
+Some videos are restricted by their owner, and some networks are challenged by the provider, in which case the player shows its own message instead of starting. The caption keeps a direct **Watch on …** link for that case.
 
 Links are kept rather than flattened. The words that carried a link are underlined with a dotted rule where they appear in the text, and `Ctrl+L` opens a side panel listing every destination with the block it came from — click a row to jump back to that paragraph. Links that lead to another page in the same table of contents get a **Type this page** button, so following a reference is the same gesture as opening any other page.
 

@@ -50,6 +50,12 @@ export const collections = sqliteTable('collections', {
   homeUrl: text('home_url').notNull(),
   /** Host, shown on the library card. */
   site: text('site').notNull(),
+  /**
+   * The root of the doc set, from its own table of contents. This is what makes
+   * a collection stable: page titles and sidebar group labels change as you move
+   * around a site, but the root of the contents does not.
+   */
+  rootUrl: text('root_url').notNull().default(''),
   /** JSON array of TocEntry, in reading order. */
   tocJson: text('toc_json').notNull().default('[]'),
   addedAt: integer('added_at').notNull(),
@@ -267,6 +273,34 @@ export interface StatsSummary {
 }
 
 /** What the typing view needs to offer page navigation. */
+/**
+ * A documentation set as it appears in the library: one entry, however many
+ * pages of it you have read. Progress is summed across those pages so the card
+ * reflects the whole set rather than whichever page you opened first.
+ */
+export interface CollectionSummary {
+  id: number;
+  title: string;
+  site: string;
+  homeUrl: string;
+  /** Pages of this set held locally. */
+  pageCount: number;
+  /** Pages its table of contents lists, whether imported or not. */
+  tocCount: number;
+  blockCount: number;
+  positionSum: number;
+  wordCount: number;
+  codeBlockCount: number;
+  imageCount: number;
+  addedAt: number;
+  lastOpenedAt: number | null;
+  /** The page to open when the entry is clicked: where you left off. */
+  resumeBookId: number;
+  resumeTitle: string;
+  /** That page's own URL, for opening the original in a browser. */
+  resumeUrl: string | null;
+}
+
 export interface PageContext {
   collection: Collection;
   toc: TocEntry[];

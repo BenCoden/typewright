@@ -11,6 +11,7 @@ import type {
   BlockView,
   Book,
   Collection,
+  CollectionSummary,
   PageLink,
   TocEntry,
   Session,
@@ -42,6 +43,7 @@ sqlite.exec(`
     title    TEXT    NOT NULL,
     home_url TEXT    NOT NULL,
     site     TEXT    NOT NULL,
+    root_url TEXT    NOT NULL DEFAULT '',
     toc_json TEXT    NOT NULL DEFAULT '[]',
     added_at INTEGER NOT NULL
   );
@@ -149,6 +151,7 @@ ensureColumn('books', 'adapter', 'adapter TEXT');
 ensureColumn('books', 'content_hash', 'content_hash TEXT');
 ensureColumn('books', 'fetched_at', 'fetched_at INTEGER');
 ensureColumn('books', 'toc_idx', 'toc_idx INTEGER');
+ensureColumn('collections', 'root_url', "root_url TEXT NOT NULL DEFAULT ''");
 ensureColumn('blocks', 'links_json', 'links_json TEXT');
 ensureColumn('blocks', 'src', 'src TEXT');
 sqlite.exec('CREATE INDEX IF NOT EXISTS books_collection_idx ON books (collection_id)');
@@ -232,7 +235,13 @@ export interface IStorage {
   listCollections(): Collection[];
   getCollection(id: number): Collection | undefined;
   /** Finds an existing collection for a site+TOC, or creates one. */
-  upsertCollection(input: { title: string; homeUrl: string; site: string; toc: TocEntry[] }): Collection;
+  upsertCollection(input: {
+    title: string;
+    homeUrl: string;
+    site: string;
+    rootUrl: string;
+    toc: TocEntry[];
+  }): Collection;
   updateCollectionToc(id: number, toc: TocEntry[]): void;
   getBookByUrl(url: string): Book | undefined;
   listCollectionBooks(collectionId: number): Book[];
@@ -245,6 +254,7 @@ export interface IStorage {
   setPosition(id: number, idx: number): Book | undefined;
   getBlocks(bookId: number, from: number, count: number): BlockView[];
   getPageLinks(bookId: number): PageLink[];
+  listCollectionSummaries(): CollectionSummary[];
   /** Chapter/section outline for the jump-to menu. */
   getOutline(bookId: number): { idx: number; section: string; kind: string }[];
   getAsset(id: number): Asset | undefined;
@@ -296,19 +306,24 @@ class SqliteStorage implements IStorage {
     title: string;
     homeUrl: string;
     site: string;
+    rootUrl: string;
     toc: TocEntry[];
   }): Collection {
-    // One collection per TOC root: the same doc set imported twice should not
-    // split navigation across two cards.
+    /*
+     * A doc set is identified by its host plus the root of its contents, never
+     * by the title of the page that happened to be imported first. Titles and
+     * sidebar group labels shift as you move around a site, which is what used
+     * to split one doc set across several library entries.
+     */
     const existing = db
       .select()
       .from(collections)
-      .where(and(eq(collections.site, input.site), eq(collections.title, input.title)))
+      .where(and(eq(collections.site, input.site), eq(collections.rootUrl, input.rootUrl)))
       .get();
 
     if (existing) {
       // A later page often carries a fuller TOC than the first one did.
-      if (input.toc.length > JSON.parse(existing.tocJson).length) {
+      if (input.toc.length > (JSON.parse(existing.tocJson) as TocEntry[]).length) {
         this.updateCollectionToc(existing.id, input.toc);
         return { ...existing, tocJson: JSON.stringify(input.toc) };
       }
@@ -321,6 +336,7 @@ class SqliteStorage implements IStorage {
         title: input.title,
         homeUrl: input.homeUrl,
         site: input.site,
+        rootUrl: input.rootUrl,
         tocJson: JSON.stringify(input.toc),
         addedAt: Date.now(),
       })
@@ -526,6 +542,50 @@ class SqliteStorage implements IStorage {
       asset: row.asset ?? null,
       links: parseLinks(row.block.linksJson),
     }));
+  }
+
+  /**
+   * The library view of every doc set: one row per collection, with its pages'
+   * progress and counts rolled up, and the page to resume on.
+   */
+  listCollectionSummaries(): CollectionSummary[] {
+    const out: CollectionSummary[] = [];
+
+    for (const collection of this.listCollections()) {
+      const pages = this.listCollectionBooks(collection.id);
+      if (!pages.length) continue;
+
+      // Resume on the page last opened, or failing that the one added last —
+      // either way, the page you were on rather than the one pasted first.
+      const resume =
+        [...pages].sort(
+          (a, b) => (b.lastOpenedAt ?? 0) - (a.lastOpenedAt ?? 0) || b.addedAt - a.addedAt
+        )[0] ?? pages[0];
+
+      out.push({
+        id: collection.id,
+        title: collection.title,
+        site: collection.site,
+        homeUrl: collection.homeUrl,
+        pageCount: pages.length,
+        tocCount: (JSON.parse(collection.tocJson) as TocEntry[]).filter((e) => e.url).length,
+        blockCount: pages.reduce((sum, p) => sum + p.blockCount, 0),
+        positionSum: pages.reduce((sum, p) => sum + p.positionIdx, 0),
+        wordCount: pages.reduce((sum, p) => sum + p.wordCount, 0),
+        codeBlockCount: pages.reduce((sum, p) => sum + p.codeBlockCount, 0),
+        imageCount: pages.reduce((sum, p) => sum + p.imageCount, 0),
+        addedAt: collection.addedAt,
+        lastOpenedAt: pages.reduce<number | null>(
+          (latest, p) => (p.lastOpenedAt && (!latest || p.lastOpenedAt > latest) ? p.lastOpenedAt : latest),
+          null
+        ),
+        resumeBookId: resume.id,
+        resumeTitle: resume.title,
+        resumeUrl: resume.sourceUrl,
+      });
+    }
+
+    return out.sort((a, b) => (b.lastOpenedAt ?? b.addedAt) - (a.lastOpenedAt ?? a.addedAt));
   }
 
   /** Every link on a page, in reading order, for the links panel. */
