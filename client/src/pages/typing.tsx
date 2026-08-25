@@ -16,6 +16,7 @@ import {
   SkipForward,
 } from 'lucide-react';
 import { ShortcutsOverlay } from '@/components/shortcuts';
+import { Hint } from '@/components/hint';
 import {
   ContentsPanel,
   JumpPalette,
@@ -714,100 +715,149 @@ export default function TypingPage() {
           </div>
 
           {book.sourceUrl && (
-            <a
-              href={book.sourceUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
-              aria-label={`Open ${book.title} on ${new URL(book.sourceUrl).hostname}`}
-              title={book.sourceUrl}
-              data-testid="button-open-source"
-            >
-              <ExternalLink className="h-4 w-4" />
-            </a>
+            <Hint label="Open the original page">
+              <a
+                href={book.sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
+                aria-label={`Open ${book.title} on ${new URL(book.sourceUrl).hostname}`}
+                data-testid="button-open-source"
+              >
+                <ExternalLink className="h-4 w-4" />
+              </a>
+            </Hint>
           )}
-          {pageContext && (
-            <>
-              <button
-                type="button"
-                disabled={!pageContext.previous?.url || openPage.isPending}
-                onClick={() => pageContext.previous?.url && openUrl(pageContext.previous.url)}
-                className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2 disabled:opacity-40"
-                aria-label={
-                  pageContext.previous ? `Previous page: ${pageContext.previous.title}` : 'No previous page'
+
+          {/*
+            * Prev/next belong in the header for every book. When a page is part
+            * of a documentation set they walk the TOC; on a file they step to
+            * the neighbouring block, which is what "the previous page" means
+            * when there is only one page.
+            */}
+          <Hint
+            label={
+              pageContext?.previous
+                ? `Previous page: ${pageContext.previous.title}`
+                : book.sourceUrl
+                  ? 'No previous page'
+                  : 'Back to the previous paragraph'
+            }
+            keys={['Ctrl', pageContext ? ',' : 'Left']}
+          >
+            <button
+              type="button"
+              disabled={
+                pageContext ? !pageContext.previous?.url || openPage.isPending : idx === null || idx === 0
+              }
+              onClick={() => {
+                if (pageContext?.previous?.url) openUrl(pageContext.previous.url);
+                else if (idx !== null && idx > 0) {
+                  const target = idx - 1;
+                  setIdx(target);
+                  savePosition(target);
                 }
-                title={pageContext.previous ? `${pageContext.previous.title} — Ctrl+,` : undefined}
-                data-testid="button-prev-page"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                disabled={!pageContext.next?.url || openPage.isPending}
-                onClick={() => pageContext.next?.url && openUrl(pageContext.next.url)}
-                className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2 disabled:opacity-40"
-                aria-label={pageContext.next ? `Next page: ${pageContext.next.title}` : 'No next page'}
-                title={pageContext.next ? `${pageContext.next.title} — Ctrl+.` : undefined}
-                data-testid="button-next-page"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </>
-          )}
-          <button
-            type="button"
-            onClick={() => setLinksOpen((o) => !o)}
-            className={cn(
-              'rounded-md p-2 hover-elevate active-elevate-2',
-              linksOpen ? 'bg-secondary text-foreground' : 'text-muted-foreground'
-            )}
-            aria-label="Links on this page"
-            title="Links on this page — Ctrl+L"
-            data-testid="button-links"
+              }}
+              className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2 disabled:opacity-40"
+              aria-label="Previous"
+              data-testid="button-prev-page"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+          </Hint>
+          <Hint
+            label={
+              pageContext?.next
+                ? `Next page: ${pageContext.next.title}`
+                : book.sourceUrl
+                  ? 'No next page'
+                  : 'Skip this paragraph'
+            }
+            keys={['Ctrl', pageContext ? '.' : 'Right']}
           >
-            <Link2 className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setOutlineOpen((o) => !o)}
-            className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
-            aria-label="Contents"
-            data-testid="button-outline"
-          >
-            <List className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setReadingMode((reading) => {
-                lastKeyAtRef.current = 0;
-                if (!reading) void flushSession();
-                return !reading;
-              });
-              setPaused(false);
-            }}
-            className={cn(
-              'rounded-md p-2 hover-elevate active-elevate-2',
-              readingMode ? 'text-primary' : 'text-muted-foreground'
-            )}
-            aria-label={readingMode ? 'Exit reading mode (Ctrl+M)' : 'Reading mode (Ctrl+M)'}
-            title="Reading mode — Ctrl+M"
-            data-testid="button-reading-mode"
-          >
-            <BookOpen className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setPaused((p) => !p);
-              void flushSession();
-            }}
-            className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
-            aria-label={paused ? 'Resume' : 'Pause'}
-            data-testid="button-pause"
-          >
-            <Pause className="h-4 w-4" />
-          </button>
+            <button
+              type="button"
+              disabled={
+                pageContext
+                  ? !pageContext.next?.url || openPage.isPending
+                  : idx === null || idx >= book.blockCount - 1
+              }
+              onClick={() => {
+                if (pageContext?.next?.url) openUrl(pageContext.next.url);
+                else if (idx !== null && idx < book.blockCount - 1) {
+                  const target = idx + 1;
+                  setIdx(target);
+                  savePosition(target);
+                }
+              }}
+              className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2 disabled:opacity-40"
+              aria-label="Next"
+              data-testid="button-next-page"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </Hint>
+
+          <Hint label="Links on this page" keys={['Ctrl', 'L']}>
+            <button
+              type="button"
+              onClick={() => setLinksOpen((o) => !o)}
+              className={cn(
+                'rounded-md p-2 hover-elevate active-elevate-2',
+                linksOpen ? 'bg-secondary text-foreground' : 'text-muted-foreground'
+              )}
+              aria-label="Links on this page"
+              data-testid="button-links"
+            >
+              <Link2 className="h-4 w-4" />
+            </button>
+          </Hint>
+          <Hint label="Contents" keys={['Ctrl', 'O']}>
+            <button
+              type="button"
+              onClick={() => setOutlineOpen((o) => !o)}
+              className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
+              aria-label="Contents"
+              data-testid="button-outline"
+            >
+              <List className="h-4 w-4" />
+            </button>
+          </Hint>
+          <Hint label={readingMode ? 'Exit reading mode' : 'Reading mode'} keys={['Ctrl', 'M']}>
+            <button
+              type="button"
+              onClick={() => {
+                setReadingMode((reading) => {
+                  lastKeyAtRef.current = 0;
+                  if (!reading) void flushSession();
+                  return !reading;
+                });
+                setPaused(false);
+              }}
+              className={cn(
+                'rounded-md p-2 hover-elevate active-elevate-2',
+                readingMode ? 'text-primary' : 'text-muted-foreground'
+              )}
+              aria-label={readingMode ? 'Exit reading mode' : 'Reading mode'}
+              data-testid="button-reading-mode"
+            >
+              <BookOpen className="h-4 w-4" />
+            </button>
+          </Hint>
+          <Hint label={paused ? 'Resume' : 'Pause'} keys={['Esc']}>
+            <button
+              type="button"
+              onClick={() => {
+                setPaused((p) => !p);
+                void flushSession();
+              }}
+              className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
+              aria-label={paused ? 'Resume' : 'Pause'}
+              data-testid="button-pause"
+            >
+              <Pause className="h-4 w-4" />
+            </button>
+          </Hint>
         </div>
 
         <div className="h-0.5 w-full bg-border">
@@ -1000,25 +1050,28 @@ export default function TypingPage() {
                 Enter for newline · Tab for indent
               </span>
             )}
-            <button
-              type="button"
-              onClick={() => setShortcutsOpen(true)}
-              className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
-              aria-label="Shortcuts (Ctrl+/)"
-              title="Shortcuts — Ctrl+/"
-              data-testid="button-shortcuts"
-            >
-              <Keyboard className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              onClick={advance}
-              className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-muted-foreground hover-elevate active-elevate-2"
-              data-testid="button-skip"
-            >
-              <SkipForward className="h-4 w-4" />
-              Skip
-            </button>
+            <Hint label="Shortcuts" keys={['Ctrl', '/']}>
+              <button
+                type="button"
+                onClick={() => setShortcutsOpen(true)}
+                className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
+                aria-label="Shortcuts"
+                data-testid="button-shortcuts"
+              >
+                <Keyboard className="h-4 w-4" />
+              </button>
+            </Hint>
+            <Hint label="Skip this block" keys={['Ctrl', 'Right']}>
+              <button
+                type="button"
+                onClick={advance}
+                className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-muted-foreground hover-elevate active-elevate-2"
+                data-testid="button-skip"
+              >
+                <SkipForward className="h-4 w-4" />
+                Skip
+              </button>
+            </Hint>
           </div>
         </div>
       </div>

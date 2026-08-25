@@ -475,6 +475,49 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     );
   });
 
+  /* ---------------------------------------------------------------- *
+   * Book sources — pinned links to places you get books
+   * ---------------------------------------------------------------- */
+
+  app.get('/api/book-sources', (_req, res) => {
+    res.json(storage.listBookSources());
+  });
+
+  app.post('/api/book-sources', (req, res) => {
+    const body = z
+      .object({
+        label: z.string().trim().min(1).max(120),
+        url: z.string().url().max(2000),
+        note: z.string().max(400).nullish(),
+      })
+      .safeParse(req.body);
+    if (!body.success) return fail(res, 400, 'Give it a label and a URL.');
+
+    try {
+      const parsed = new URL(body.data.url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return fail(res, 400, 'Only http and https URLs can be saved.');
+      }
+    } catch {
+      return fail(res, 400, 'That URL is not valid.');
+    }
+
+    res.status(201).json(
+      storage.createBookSource({
+        label: body.data.label,
+        url: body.data.url,
+        note: body.data.note ?? null,
+      })
+    );
+  });
+
+  app.delete('/api/book-sources/:id', (req, res) => {
+    const id = idParam.safeParse(req.params.id);
+    if (!id.success) return fail(res, 400, 'Invalid id.');
+    storage.deleteBookSource(id.data);
+    res.status(204).end();
+  });
+
   app.get('/api/renderer', async (_req, res) => {
     res.json(await rendererStatus());
   });
@@ -607,6 +650,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         autoPauseMs: z.number().int().min(0).max(60000).optional(),
         readingFontSize: z.number().int().min(14).max(40).optional(),
         readingLineHeight: z.enum(['xs', 's', 'm', 'l', 'xl']).optional(),
+        showShortcutHints: z.number().int().min(0).max(1).optional(),
       })
       .safeParse(req.body);
     if (!body.success) return fail(res, 400, 'Invalid settings.');

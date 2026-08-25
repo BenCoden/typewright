@@ -32,7 +32,7 @@ import type { TocEntry } from '@shared/schema';
  */
 
 const USER_AGENT =
-  'Typewright/1.0 (local typing practice; +https://github.com/typewright) Mozilla/5.0 compatible';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 Typewright/1.0';
 
 const FETCH_TIMEOUT_MS = 20_000;
 /** Guards against a mis-parsed page pulling down something enormous. */
@@ -46,7 +46,7 @@ export interface WebPage extends ParsedBook {
   sourceUrl: string;
   /** The source actually parsed — raw Markdown, wiki API, or the page itself. */
   upstreamUrl: string | null;
-  adapter: 'git-markdown' | 'wiki' | 'readable' | 'rendered';
+  adapter: 'git-markdown' | 'wiki' | 'readable' | 'rendered' | 'openstax' | 'sacred-texts';
   contentHash: string;
   /** The documentation set this page belongs to. */
   collection: { title: string; site: string; homeUrl: string; rootUrl: string; toc: TocEntry[] };
@@ -60,7 +60,11 @@ async function request(url: string, accept: string): Promise<Response> {
   const response = await fetch(url, {
     redirect: 'follow',
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    headers: { 'User-Agent': USER_AGENT, Accept: accept },
+    headers: {
+      'User-Agent': USER_AGENT,
+      Accept: accept,
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText} for ${url}`);
   return response;
@@ -829,6 +833,13 @@ function readableContent(html: string): { element: HTMLElement; title: string } 
     root.querySelector('.markdown-body'),
     root.querySelector('#mw-content-text'),
     root.querySelector('body'),
+    /*
+     * Old HTML pages routinely leave <head> and <body> unclosed, so the parser
+     * ends up with content directly under <html>. Falling through to root and
+     * html keeps that content reachable.
+     */
+    root.querySelector('html'),
+    root as HTMLElement,
   ].filter((element): element is HTMLElement => Boolean(element));
 
   // The best candidate is the one with the most prose, not the first match.
@@ -992,6 +1003,14 @@ export async function importUrl(rawUrl: string): Promise<WebPage> {
   const wiki = await tryWiki(sourceUrl, html, images, notes);
   if (wiki) return wiki;
 
+  /* ---- 1b. OpenStax: the archive JSON, not the JavaScript shell ---- */
+  const openstax = await tryOpenStax(sourceUrl, html, images, notes);
+  if (openstax) return openstax;
+
+  /* ---- 1c. Internet Sacred Text Archive: old HTML, predictable layout ---- */
+  const sacred = await trySacredTexts(sourceUrl, html, images, notes);
+  if (sacred) return sacred;
+
   /* ---- 2. Git-backed docs: read the Markdown the page was built from ---- */
   const gitUrl =
     metaContent(html, 'original_content_git_url') ?? metaContent(html, 'gitcommit');
@@ -1134,6 +1153,382 @@ function titleFor(url: string): string {
 /* ------------------------------------------------------------------ *
  * MediaWiki
  * ------------------------------------------------------------------ */
+
+
+/**
+ * Reads an OpenStax book page from the archive service.
+ *
+ * The published page is a React shell — a fetch of the URL sees a heading and
+ * nothing else — but the initial state embedded in that shell names the book id,
+ * archive version, and page id, and the archive service returns the actual
+ * chapter as XHTML. That is what an EPUB build would use; we do the same.
+ */
+async function tryOpenStax(
+  sourceUrl: string,
+  html: string,
+  images: Map<string, ExtractedImage>,
+  notes: string[]
+): Promise<WebPage | null> {
+  if (!/(^|\.)openstax\.org$/i.test(new URL(sourceUrl).hostname)) return null;
+
+  const stateRaw = html.match(/window\.__PRELOADED_STATE__\s*=\s*/);
+  if (!stateRaw) return null;
+
+  // Balance the braces to extract the state literal.
+  const start = stateRaw.index! + stateRaw[0].length;
+  let depth = 0;
+  let end = start;
+  for (let i = start; i < html.length; i += 1) {
+    const c = html[i];
+    if (c === '{') depth += 1;
+    else if (c === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  let state: OpenStaxState;
+  try {
+    state = JSON.parse(html.slice(start, end)) as OpenStaxState;
+  } catch {
+    return null;
+  }
+
+  const content = state.content;
+  const book = content?.book;
+  const page = content?.page;
+  if (!book?.id || !book?.archiveVersion || !book?.contentVersion || !page?.id) return null;
+
+  const archiveUrl =
+    `https://openstax.org/apps/archive/${book.archiveVersion}` +
+    `/contents/${book.id}@${book.contentVersion}:${page.id}.json`;
+
+  let chapter: OpenStaxPage;
+  try {
+    chapter = await fetchJson<OpenStaxPage>(archiveUrl);
+  } catch {
+    return null;
+  }
+  if (!chapter.content) return null;
+
+  const ctx: MarkdownContext = {
+    images,
+    notes,
+    pageUrl: sourceUrl,
+    resolve: (relative) => {
+      try {
+        return new URL(relative, archiveUrl).toString();
+      } catch {
+        return null;
+      }
+    },
+  };
+
+  const wrapped = `<html><body>${chapter.content}</body></html>`;
+  const root = parseDocument(wrapped);
+  const body = root.querySelector('body') ?? (root as HTMLElement);
+
+  const bookTree = book.tree ?? { title: book.title ?? siteName(sourceUrl), contents: [] };
+  const toc = openStaxToc(bookTree, book.slug ?? '');
+
+  const { blocks } = await blocksFromHtmlElement(body as HTMLElement, sourceUrl, ctx);
+  if (!blocks.length) return null;
+
+  const title = stripTags(chapter.title ?? page.title ?? bookTree.title ?? titleFor(sourceUrl));
+
+  const rootUrl = book.slug
+    ? `https://openstax.org/books/${book.slug}`.toLowerCase()
+    : collectionRoot(sourceUrl, toc);
+
+  return {
+    title,
+    author: bookTree.title ?? siteName(sourceUrl),
+    format: 'web',
+    blocks,
+    images,
+    notes,
+    sourceUrl,
+    upstreamUrl: archiveUrl,
+    adapter: 'openstax',
+    contentHash: blockHash(blocks),
+    collection: {
+      title: bookTree.title ?? 'OpenStax',
+      site: siteName(sourceUrl),
+      homeUrl: `https://openstax.org/books/${book.slug ?? ''}`,
+      rootUrl,
+      toc,
+    },
+  };
+}
+
+interface OpenStaxTreeNode {
+  title?: string;
+  slug?: string;
+  contents?: OpenStaxTreeNode[];
+}
+
+interface OpenStaxState {
+  content?: {
+    book?: {
+      id?: string;
+      slug?: string;
+      title?: string;
+      archiveVersion?: string;
+      contentVersion?: string;
+      tree?: OpenStaxTreeNode;
+    };
+    page?: { id?: string; title?: string };
+  };
+}
+
+interface OpenStaxPage {
+  title?: string;
+  content?: string;
+}
+
+/**
+ * Turns the OpenStax tree into a flat table of contents.
+ *
+ * Titles in the tree are HTML fragments with `os-number` and `os-text` spans;
+ * flattening them out gives the plain reading order — "1.2 Europe on the Brink
+ * of Change" — that shows up in the sidebar of the site.
+ */
+function openStaxToc(tree: OpenStaxTreeNode, bookSlug: string): TocEntry[] {
+  const out: TocEntry[] = [];
+
+  function walk(node: OpenStaxTreeNode, depth: number): void {
+    const title = openStaxLabel(node.title);
+    const url = node.slug
+      ? `https://openstax.org/books/${bookSlug}/pages/${node.slug}`
+      : null;
+    if (title) out.push({ title, url, depth });
+    for (const child of node.contents ?? []) walk(child, depth + 1);
+  }
+
+  for (const child of tree.contents ?? []) walk(child, 0);
+  return out;
+}
+
+/** Strips OpenStax's number/divider/text spans to a plain string. */
+function openStaxLabel(html: string | undefined): string {
+  if (!html) return '';
+
+  // "1.2 " + "Europe on the Brink of Change" — join with a single space.
+  const withoutTags = html
+    .replace(/<span[^>]*class="[^"]*os-divider[^"]*"[^>]*>[\s\S]*?<\/span>/gi, ' ')
+    .replace(/<[^>]+>/g, '');
+
+  return withoutTags.replace(/\s+/g, ' ').trim();
+}
+
+function stripTags(text: string): string {
+  return text.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+
+/**
+ * Reads a chapter from the Internet Sacred Text Archive.
+ *
+ * Its pages predate HTML5 — no `<article>`, no `<main>`, `<head>` and `<body>`
+ * often left open — so the readable adapter would ignore them. The layout is
+ * predictable enough that a small dedicated adapter is worth the reliability:
+ * a book folder holds an `index.htm` with an anchor per chapter and every
+ * chapter is a series of `<p>` elements in a table.
+ */
+async function trySacredTexts(
+  sourceUrl: string,
+  html: string,
+  images: Map<string, ExtractedImage>,
+  notes: string[]
+): Promise<WebPage | null> {
+  const url = new URL(sourceUrl);
+  if (!/(^|\.)sacred-texts\.com$/i.test(url.hostname)) return null;
+
+  const segments = url.pathname.split('/').filter(Boolean);
+  if (segments.length < 2) return null;
+
+  const filename = segments[segments.length - 1];
+  const bookDir = segments.slice(0, -1).join('/');
+  const bookHome = `${url.origin}/${bookDir}/`;
+  const isIndexPage = /^index\.html?$/i.test(filename);
+
+  /*
+   * Books are indexed by <slug>.htm (Genesis = bib/tan/gen.htm), with an
+   * index.htm at the section level that lists whole books. The slug is what
+   * we want, but fall back to index.htm if it does not exist.
+   */
+  const bookSlug = (filename.match(/^([a-z]+)\d/i) ?? [])[1] ?? '';
+  const indexCandidates = bookSlug
+    ? [`${bookHome}${bookSlug}.htm`, `${bookHome}index.htm`]
+    : [`${bookHome}index.htm`];
+
+  const root = parseDocument(html);
+  const content = root.querySelector('html') as HTMLElement | null;
+  if (!content) return null;
+
+  // Site chrome is a fixed run of anchors at the top; a horizontal rule closes
+  // it in every book. Drop everything before the first <hr>.
+  const firstHr = content.querySelector('hr');
+  if (firstHr && firstHr.parentNode) {
+    for (const node of Array.from((firstHr.parentNode as HTMLElement).childNodes)) {
+      if (node === firstHr) break;
+      (node as HTMLElement).remove?.();
+    }
+    firstHr.remove();
+  }
+  for (const selector of CHROME_SELECTORS) {
+    for (const node of content.querySelectorAll(selector)) node.remove();
+  }
+
+  const ctx: MarkdownContext = {
+    images,
+    notes,
+    pageUrl: sourceUrl,
+    resolve: (relative) => {
+      try {
+        return new URL(relative, sourceUrl).toString();
+      } catch {
+        return null;
+      }
+    },
+  };
+  const { blocks } = await blocksFromHtmlElement(content, sourceUrl, ctx);
+  if (!blocks.length) return null;
+
+  // A page title such as "Tanach: Genesis: Genesis Chapter 1 | Site name" is
+  // three copies of the same thing; the last segment is enough. When the parser
+  // could not find a <title> at all — which happens on this site's misnested
+  // markup — fall back to the first heading in the extracted blocks.
+  const rawTitle =
+    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ??
+    blocks.find((b) => b.kind === 'heading')?.text ??
+    filename;
+  const title = rawTitle
+    .split(/\s*\|\s*/)[0]
+    .split(/\s*:\s*/)
+    .pop()!
+    .trim()
+    .replace(/\s+/g, ' ');
+
+  // Try each candidate index in turn; keep the first one that yields a TOC.
+  let toc: TocEntry[] = [];
+  let indexTitle: string | null = null;
+  for (const candidate of indexCandidates) {
+    const result = await sacredTextsToc(candidate, sourceUrl).catch(
+      () => ({ toc: [], title: null }) as { toc: TocEntry[]; title: string | null }
+    );
+    if (result.toc.length) {
+      toc = result.toc;
+      indexTitle = result.title;
+      break;
+    }
+  }
+
+  const bookLabel = indexTitle || titleCase(bookDir.split('/').pop() ?? '');
+
+  return {
+    title: isIndexPage ? bookLabel : title,
+    author: bookLabel,
+    format: 'web',
+    blocks,
+    images,
+    notes,
+    sourceUrl,
+    upstreamUrl: null,
+    adapter: 'sacred-texts',
+    contentHash: blockHash(blocks),
+    collection: {
+      title: bookLabel,
+      site: siteName(sourceUrl),
+      homeUrl: bookHome,
+      rootUrl: bookHome.replace(/\/+$/, '').toLowerCase(),
+      toc,
+    },
+  };
+}
+
+/**
+ * Turns a sacred-texts book index into a table of contents.
+ *
+ * Chapters are listed as `<a href="foo001.htm">Foo Chapter 1</a>` runs; anchors
+ * that jump inside a chapter (verse markers) are filtered out.
+ */
+async function sacredTextsToc(
+  indexUrl: string,
+  pageUrl: string
+): Promise<{ toc: TocEntry[]; title: string | null }> {
+  const html = await fetchText(indexUrl).catch(() => null);
+  if (!html) return { toc: [], title: null };
+
+  const root = parseDocument(html);
+  const out: TocEntry[] = [];
+  const seen = new Set<string>();
+
+  /*
+   * Chapters live in the same directory and follow one of two shapes: the book
+   * slug plus a number, or a plain three-letter file. Filtering to those drops
+   * the miscellaneous links (font notice, documentation) mixed in at the top.
+   */
+  const indexPath = new URL(indexUrl).pathname;
+  const bookSlug = indexPath.split('/').filter(Boolean).slice(-2, -1)[0] ?? '';
+  const chapterRe = new RegExp(`^(?:${escapeForRe(bookSlug)}\\d+|[a-z]{2,4}\\d+|chap\\d+|ch\\d+)\\.html?$`, 'i');
+
+  for (const anchor of root.querySelectorAll('a')) {
+    const href = anchor.getAttribute('href');
+    const title = anchor.textContent.replace(/\s+/g, ' ').trim();
+    if (!href || !title) continue;
+    if (href.includes('#')) continue; // verse marker, not a page
+    if (/^https?:/i.test(href) || href.startsWith('..') || href.startsWith('/')) continue;
+
+    let url: URL;
+    try {
+      url = new URL(href, indexUrl);
+    } catch {
+      continue;
+    }
+    if (url.pathname === indexPath) continue;
+
+    const leaf = url.pathname.split('/').pop() ?? '';
+    if (!chapterRe.test(leaf)) continue;
+
+    const key = url.toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({ title, url: key, depth: 0 });
+  }
+
+  /*
+   * Read a book-level label from the index page's own <title>. The site names
+   * every page "Tradition: Book Name: Book Name index | Site" — the third
+   * segment is the one worth showing on the library card.
+   */
+  const rawIndexTitle = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '';
+  const cleaned = rawIndexTitle
+    .split(/\s*\|\s*/)[0]
+    .split(/\s*:\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const bookTitle =
+    cleaned.length >= 2
+      ? cleaned[cleaned.length - 1].replace(/\s+(index|table of contents)\s*$/i, '').trim()
+      : null;
+
+  return { toc: out, title: bookTitle };
+}
+
+function escapeForRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function titleCase(slug: string): string {
+  return slug
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+}
 
 async function tryWiki(
   sourceUrl: string,

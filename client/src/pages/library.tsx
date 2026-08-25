@@ -19,6 +19,7 @@ import {
 import { API_BASE, apiRequest, assetUrl, queryClient } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
 import { EmptyState } from '@/components/chrome';
+import { BookSources } from '@/components/book-sources';
 import { useToast } from '@/hooks/use-toast';
 import type { Book, CollectionSummary, ImportResult } from '@shared/schema';
 
@@ -244,6 +245,9 @@ export default function LibraryPage() {
           of contents comes with it, so the rest of the set is a keystroke away.
         </p>
       </form>
+
+      {/* ---- Where to get books ---- */}
+      <BookSources />
 
       {/* ---- Import ---- */}
       <div

@@ -3,13 +3,14 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { and, desc, eq, gte, sql } from 'drizzle-orm';
 import fs from 'node:fs';
 import path from 'node:path';
-import { assets, blocks, books, collections, sessions, settings } from '@shared/schema';
+import { assets, blocks, bookSources, books, collections, sessions, settings } from '@shared/schema';
 import type {
   Asset,
   Block,
   BlockLink,
   BlockView,
   Book,
+  BookSource,
   Collection,
   CollectionSummary,
   PageLink,
@@ -38,6 +39,15 @@ export const db = drizzle(sqlite);
 
 /** Idempotent schema creation, so a fresh volume self-heals on boot. */
 sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS book_sources (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    label    TEXT    NOT NULL,
+    url      TEXT    NOT NULL,
+    note     TEXT,
+    sort_idx INTEGER NOT NULL DEFAULT 0,
+    added_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS collections (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     title    TEXT    NOT NULL,
@@ -178,6 +188,10 @@ ensureColumn(
 );
 ensureColumn('settings', 'auto_pause_ms', 'auto_pause_ms INTEGER NOT NULL DEFAULT 5000');
 ensureColumn('settings', 'reading_font_size', 'reading_font_size INTEGER NOT NULL DEFAULT 18');
+ensureColumn('settings', 'show_shortcut_hints', 'show_shortcut_hints INTEGER NOT NULL DEFAULT 1');
+
+seedBookSources();
+
 ensureColumn(
   'settings',
   'reading_line_height',
@@ -254,6 +268,9 @@ export interface IStorage {
   setPosition(id: number, idx: number): Book | undefined;
   getBlocks(bookId: number, from: number, count: number): BlockView[];
   getPageLinks(bookId: number): PageLink[];
+  listBookSources(): BookSource[];
+  createBookSource(input: Pick<BookSource, 'label' | 'url'> & { note?: string | null }): BookSource;
+  deleteBookSource(id: number): void;
   listCollectionSummaries(): CollectionSummary[];
   /** Chapter/section outline for the jump-to menu. */
   getOutline(bookId: number): { idx: number; section: string; kind: string }[];
@@ -291,6 +308,43 @@ function countBlocks(list: NewBlock[]) {
     // "Media" on the card: figures and embedded players alike.
     imageCount: list.filter((b) => b.kind === 'image' || b.kind === 'embed').length,
   };
+}
+
+/**
+ * On first run, drop in a few free and paid stores worth pinning.
+ *
+ * The seed only fires when the table is empty, so removing an entry does not
+ * bring it back on the next start. New entries added by hand stay put.
+ */
+function seedBookSources(): void {
+  const count = (sqlite.prepare('SELECT COUNT(*) AS n FROM book_sources').get() as { n: number }).n;
+  if (count > 0) return;
+
+  const now = Date.now();
+  const insert = sqlite.prepare(
+    'INSERT INTO book_sources (label, url, note, sort_idx, added_at) VALUES (?, ?, ?, ?, ?)'
+  );
+  const seed: [string, string, string, number][] = [
+    ['Project Gutenberg', 'https://www.gutenberg.org/', 'Free public-domain books — EPUB and plain text', 0],
+    ['Standard Ebooks', 'https://standardebooks.org/', 'Carefully produced public-domain EPUBs', 1],
+    ['eBooks.com — DRM-free', 'https://www.ebooks.com/drm-free/', 'Nearly 300k DRM-free titles across major publishers', 2],
+    ['Smashwords', 'https://www.smashwords.com/', 'Indie authors, many free, all DRM-free', 3],
+    ['Leanpub', 'https://leanpub.com/bookstore?type=book', 'In-progress and completed books, DRM-free', 4],
+    ['Humble Bundle — Books', 'https://www.humblebundle.com/books', 'Cheap bundles; look for the DRM-Free badge', 5],
+    ['StoryBundle', 'https://storybundle.com/', 'Curated indie bundles, all DRM-free', 6],
+    ['Manning', 'https://www.manning.com/', 'Software titles — MEAP EPUBs keep code listings intact', 7],
+    ['Open Library', 'https://openlibrary.org/', 'Internet Archive search for public-domain scans', 8],
+    ['Unglue.it', 'https://unglue.it/', 'Crowdfunded DRM-free books, some under free culture licences', 9],
+    ['DigiLibraries', 'https://digilibraries.com/', 'Free books across many genres, DRM-free', 10],
+    ['Guide to DRM-Free Living', 'https://www.defectivebydesign.org/guide/ebooks', 'More sources of DRM-free ebooks', 11],
+    ['Entertrained — sources list', 'https://entertrained.app/upload', 'Their own roundup of DRM-free ebook stores', 12],
+    ['OpenStax', 'https://openstax.org/subjects', 'Free peer-reviewed textbooks in EPUB and PDF', 13],
+    ['Internet Sacred Text Archive', 'https://sacred-texts.com/', 'Public-domain religious and mythological texts', 14],
+  ];
+  const write = sqlite.transaction((rows: typeof seed) => {
+    for (const [label, url, note, sortIdx] of rows) insert.run(label, url, note, sortIdx, now);
+  });
+  write(seed);
 }
 
 class SqliteStorage implements IStorage {
@@ -642,6 +696,34 @@ class SqliteStorage implements IStorage {
 
   getSettings(): Settings {
     return db.select().from(settings).where(eq(settings.id, 1)).get()!;
+  }
+
+  listBookSources(): BookSource[] {
+    return db.select().from(bookSources).orderBy(bookSources.sortIdx, bookSources.addedAt).all();
+  }
+
+  createBookSource(input: {
+    label: string;
+    url: string;
+    note?: string | null;
+  }): BookSource {
+    const maxSort =
+      (sqlite.prepare('SELECT COALESCE(MAX(sort_idx), -1) AS m FROM book_sources').get() as { m: number }).m;
+    return db
+      .insert(bookSources)
+      .values({
+        label: input.label,
+        url: input.url,
+        note: input.note ?? null,
+        sortIdx: maxSort + 1,
+        addedAt: Date.now(),
+      })
+      .returning()
+      .get();
+  }
+
+  deleteBookSource(id: number): void {
+    db.delete(bookSources).where(eq(bookSources.id, id)).run();
   }
 
   updateSettings(patch: Partial<Settings>): Settings {

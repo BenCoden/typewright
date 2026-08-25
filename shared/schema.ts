@@ -178,6 +178,24 @@ export const sessions = sqliteTable(
 );
 
 /** Single-row table (id = 1). */
+/**
+ * Somewhere to keep the sites you get books from.
+ *
+ * A pin, not an import: the URL opens in a new tab. Handy for keeping the same
+ * three or four bookstores next to the library without having to remember them.
+ */
+export const bookSources = sqliteTable('book_sources', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  label: text('label').notNull(),
+  url: text('url').notNull(),
+  note: text('note'),
+  /** Manual ordering: lower first. */
+  sortIdx: integer('sort_idx').notNull().default(0),
+  addedAt: integer('added_at').notNull(),
+});
+
+export type BookSource = typeof bookSources.$inferSelect;
+
 export const settings = sqliteTable('settings', {
   id: integer('id').primaryKey(),
   theme: text('theme').notNull().default('system'),
@@ -226,6 +244,14 @@ export const settings = sqliteTable('settings', {
    * the typing prompt above, entered with the reading-mode shortcut. */
   readingFontSize: integer('reading_font_size').notNull().default(18),
   readingLineHeight: text('reading_line_height').notNull().default('m'),
+
+  /**
+   * Show shortcut hints on button tooltips.
+   *
+   * Every button that duplicates a shortcut names it on hover. On when it helps
+   * you learn the keys, off once they are second nature.
+   */
+  showShortcutHints: integer('show_shortcut_hints').notNull().default(1),
 });
 
 /** One line of a documentation table of contents. */

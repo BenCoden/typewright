@@ -221,6 +221,13 @@ export default function SettingsPage() {
       </Section>
 
       <Section title="Shortcuts while typing">
+        <Toggle
+          label="Show shortcut hints on hover"
+          hint="Adds the keyboard shortcut to the tooltip on every button that has one. Turn off once the keys are second nature."
+          checked={settings.showShortcutHints === 1}
+          onChange={(v) => set({ showShortcutHints: v ? 1 : 0 })}
+          testId="switch-showshortcuthints"
+        />
         {SHORTCUTS.filter((shortcut) => shortcut.scope !== 'reading').map((shortcut) => (
           <ShortcutRow key={shortcut.label} keys={shortcut.keys} label={shortcut.label} />
         ))}

@@ -68,6 +68,8 @@ Typewright picks a route per site, best first:
 | **Markdown source** | Microsoft Learn and other docs published from Git | The original `.md` behind the page, so code fences are exact. `:::code` references are followed into the sample repository and the named `#region` is extracted. |
 | **Wiki API** | MediaWiki sites, including Wikipedia | The REST content endpoint, which returns clean article HTML. |
 | **Article extraction** | Everything else | The main article element, chosen by scoring candidates on text density. |
+| **OpenStax textbook** | openstax.org book pages | The chapter from the archive service, so the JavaScript shell is skipped and full-quality XHTML comes through with images |
+| **Sacred Texts Archive** | sacred-texts.com | Old but predictable markup, chapters typed as prose with a per-book table of contents |
 | **Rendered page** | Sites that build their content in the browser | Optional. See below. |
 
 Microsoft Learn is worth calling out: the page you see in a browser is a JavaScript shell with no code in it at all. Typewright reads the Markdown source instead, which is why C# listings come through with their indentation intact.
@@ -100,9 +102,13 @@ Documentation changes. The refresh button on a page's card in the library re-fet
 
 The comparison is against the text Typewright extracted, not the raw HTML, so an improvement to the importer also counts as a change. That means a page imported by an older version can be brought up to date without deleting it.
 
+### Where to get books
+
+The library page has a small **Where to get books** panel with a set of well-known DRM-free stores and free-text archives pre-pinned: Project Gutenberg, Standard Ebooks, eBooks.com, Smashwords, Leanpub, Humble Bundle, StoryBundle, Manning, Open Library, Unglue.it, DigiLibraries, OpenStax, Internet Sacred Text Archive, plus links out to Entertrained's own list and the Guide to DRM-Free Living. Pins are pins — clicking opens the site in a new tab — and any pin can be removed. Adding a new one takes a name and a URL, with an optional note.
+
 ### Pages that need JavaScript
 
-Some sites ship an empty shell and assemble the article in the browser. Reading those needs a real browser, so headless Chromium runs as a second container that is **off by default**:
+Some sites ship an empty shell and assemble the article in the browser. When Typewright recognises the site — OpenStax, MediaWiki — it fetches the underlying content directly and no browser is needed. For any other JavaScript-only site, headless Chromium runs as a second container that is **off by default**:
 
 ```bash
 docker compose --profile render up -d
