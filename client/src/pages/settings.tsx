@@ -229,17 +229,6 @@ export default function SettingsPage() {
           testId="switch-normalize"
         />
 
-        <Range
-          label="Prose block length"
-          hint="Target characters per typing block. Applies to books imported from now on."
-          value={settings.chunkSize}
-          min={120}
-          max={600}
-          step={20}
-          suffix="chars"
-          onCommit={(value) => set({ chunkSize: value })}
-          testId="slider-chunksize"
-        />
       </Section>
 
       <Section title="Shortcuts while typing">

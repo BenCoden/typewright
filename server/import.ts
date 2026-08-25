@@ -1125,15 +1125,13 @@ export function finalizeBlocks(parsed: ParsedBook, options: ImportOptions): RawB
     }
 
     /*
-     * Prose is split into sentence runs, so link offsets are worked out per run
-     * after the split. A link that straddles a boundary is reported on both
-     * sides, which is what you want when the words are underlined in place.
+     * Prose blocks are imported whole — no sentence chunking — so a paragraph
+     * in the source stays a paragraph in Typewright. Long paragraphs make for
+     * long typing runs, but they preserve the reader's mental model of the page.
      */
-    for (const run of segmentProse(normalized, options.chunkSize)) {
-      const { text, links } = readLinkMarkers(run);
-      if (text.trim().length < 2) continue;
-      out.push({ kind: 'prose', text, section: block.section, links: links.length ? links : undefined });
-    }
+    const { text, links } = readLinkMarkers(normalized);
+    if (text.trim().length < 2) continue;
+    out.push({ kind: 'prose', text, section: block.section, links: links.length ? links : undefined });
   }
 
   if (!out.length) throw new Error('That file produced no typeable text.');

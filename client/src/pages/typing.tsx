@@ -86,6 +86,13 @@ export default function TypingPage() {
   });
 
   const [idx, setIdx] = useState<number | null>(null);
+  /**
+   * Mirror of `idx` in a ref so the keydown closure (bound once per render)
+   * always sees the currently-active block when it computes a completion
+   * summary. Without it, rapid auto-advance can write results against the
+   * previous block's index and silently drop chips.
+   */
+  const idxRef = useRef<number | null>(null);
   const [fetchFrom, setFetchFrom] = useState(0);
   const [paused, setPaused] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
@@ -247,6 +254,10 @@ export default function TypingPage() {
    * ---------------------------------------------------------------- */
 
   const [state, setState] = useState<BlockState | null>(null);
+
+  useEffect(() => {
+    idxRef.current = idx;
+  }, [idx]);
 
   useEffect(() => {
     if (!currentBlock || !typing) {
@@ -665,10 +676,11 @@ export default function TypingPage() {
           const correct = totals.correctChars - baseline.correctChars;
           const errors = totals.errors - baseline.errors;
 
-          if (idx !== null && keystrokes > 0) {
+          const completedIdx = idxRef.current;
+          if (completedIdx !== null && keystrokes > 0) {
             setBlockResults((prior) => ({
               ...prior,
-              [idx]: {
+              [completedIdx]: {
                 wpm: wpm(correct, durationMs),
                 accuracy: accuracy(keystrokes, errors),
                 durationMs,
@@ -1110,6 +1122,18 @@ export default function TypingPage() {
             <p className="mt-2 text-sm text-muted-foreground">
               Press any key to carry on. Escape toggles this.
             </p>
+            <button
+              type="button"
+              onClick={() => {
+                void flushSession();
+                navigate('/');
+              }}
+              className="mt-6 inline-flex items-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm text-foreground transition hover:bg-muted"
+              data-testid="button-paused-library"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to library
+            </button>
           </div>
         </div>
       )}
