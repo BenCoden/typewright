@@ -584,6 +584,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         durationMs: z.number().int().min(0),
         keystrokes: z.number().int().min(0),
         correctChars: z.number().int().min(0),
+        scoredChars: z.number().int().min(0).default(0),
         errors: z.number().int().min(0),
         blocksCompleted: z.number().int().min(0),
         proseChars: z.number().int().min(0).default(0),
@@ -606,9 +607,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ...rest,
       endedAt: Date.now(),
       wpm: minutes > 0 ? Math.round(rest.correctChars / 5 / minutes) : 0,
+      /*
+       * Accuracy is scored over characters resolved, matching the client. A
+       * character fumbled several times before landing costs one bad mark, and
+       * fixing a mistake still costs that mark.
+       */
       accuracyBp:
-        rest.keystrokes > 0
-          ? Math.round(((rest.keystrokes - rest.errors) / rest.keystrokes) * 10000)
+        rest.scoredChars > 0
+          ? Math.round((Math.max(0, rest.scoredChars - rest.errors) / rest.scoredChars) * 10000)
           : 0,
       errorsByKey: JSON.stringify(errorsByKey),
     });

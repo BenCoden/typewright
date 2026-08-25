@@ -113,6 +113,7 @@ sqlite.exec(`
     duration_ms      INTEGER NOT NULL,
     keystrokes       INTEGER NOT NULL,
     correct_chars    INTEGER NOT NULL,
+    scored_chars     INTEGER NOT NULL DEFAULT 0,
     errors           INTEGER NOT NULL,
     blocks_completed INTEGER NOT NULL,
     prose_chars      INTEGER NOT NULL DEFAULT 0,
@@ -210,6 +211,7 @@ ensureColumn('settings', 'reading_font_size', 'reading_font_size INTEGER NOT NUL
 ensureColumn('settings', 'show_shortcut_hints', 'show_shortcut_hints INTEGER NOT NULL DEFAULT 1');
 ensureColumn('settings', 'skip_untypeable', 'skip_untypeable INTEGER NOT NULL DEFAULT 0');
 ensureColumn('settings', 'keyboard_layout', "keyboard_layout TEXT NOT NULL DEFAULT 'us'");
+ensureColumn('sessions', 'scored_chars', 'scored_chars INTEGER NOT NULL DEFAULT 0');
 
 seedBookSources();
 
@@ -808,6 +810,7 @@ class SqliteStorage implements IStorage {
                 COALESCE(SUM(duration_ms), 0)   AS ms,
                 COALESCE(SUM(correct_chars), 0) AS correct,
                 COALESCE(SUM(keystrokes), 0)    AS keystrokes,
+                COALESCE(SUM(scored_chars), 0)  AS scored,
                 COALESCE(SUM(errors), 0)        AS errors,
                 COALESCE(MAX(wpm), 0)           AS bestWpm,
                 COALESCE(SUM(prose_chars), 0)   AS proseChars,
@@ -827,6 +830,7 @@ class SqliteStorage implements IStorage {
                   SUM(correct_chars)                             AS correct,
                   SUM(duration_ms)                               AS ms,
                   SUM(keystrokes)                                AS keystrokes,
+                  SUM(scored_chars)                              AS scored,
                   SUM(errors)                                    AS errors
            FROM sessions
            GROUP BY day
@@ -837,12 +841,15 @@ class SqliteStorage implements IStorage {
     )
       .map((d) => {
         const ms = Number(d.ms) || 0;
-        const keystrokes = Number(d.keystrokes) || 0;
+        // Older rows predate scored_chars; fall back to keystrokes for them.
+        const scored = Number(d.scored) || Number(d.keystrokes) || 0;
         return {
           day: String(d.day),
           wpm: wpmOf(Number(d.correct), ms),
           accuracyBp:
-            keystrokes > 0 ? Math.round(((keystrokes - Number(d.errors)) / keystrokes) * 10000) : 0,
+            scored > 0
+              ? Math.round((Math.max(0, scored - Number(d.errors)) / scored) * 10000)
+              : 0,
           minutes: Math.max(1, Math.round(ms / 60000)),
         };
       })
@@ -882,13 +889,12 @@ class SqliteStorage implements IStorage {
         words: Math.round(Number(totals.correct) / 5),
         keystrokes: Number(totals.keystrokes),
         errors: Number(totals.errors),
-        accuracyBp:
-          Number(totals.keystrokes) > 0
-            ? Math.round(
-                ((Number(totals.keystrokes) - Number(totals.errors)) / Number(totals.keystrokes)) *
-                  10000
-              )
-            : 0,
+        // Older rows predate scored_chars; fall back to keystrokes for them.
+        accuracyBp: (() => {
+          const scored = Number(totals.scored) || Number(totals.keystrokes) || 0;
+          if (scored <= 0) return 0;
+          return Math.round((Math.max(0, scored - Number(totals.errors)) / scored) * 10000);
+        })(),
         bestWpm: Number(totals.bestWpm),
         avgWpm: wpmOf(Number(totals.correct), Number(totals.ms)),
         proseWpm: wpmOf(Number(totals.proseChars), Number(totals.proseMs)),
@@ -914,6 +920,7 @@ function normalizeSessionRow(row: any): Session & { bookTitle: string } {
     durationMs: row.duration_ms,
     keystrokes: row.keystrokes,
     correctChars: row.correct_chars,
+    scoredChars: row.scored_chars ?? 0,
     errors: row.errors,
     blocksCompleted: row.blocks_completed,
     proseChars: row.prose_chars,

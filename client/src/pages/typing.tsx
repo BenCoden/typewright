@@ -400,6 +400,7 @@ export default function TypingPage() {
       durationMs: Math.round(metrics.activeMs),
       keystrokes: metrics.keystrokes,
       correctChars: metrics.correctChars,
+      scoredChars: metrics.scoredChars,
       errors: metrics.errors,
       blocksCompleted: metrics.blocksCompleted,
       proseChars: metrics.proseChars,
@@ -838,14 +839,16 @@ export default function TypingPage() {
 
           /*
            * Take the delta between the block's baseline and the running totals
-           * to describe how the reader just did on this block alone. Errors
-           * are counted so accuracy reflects the run, not the whole session.
+           * to describe how the reader just did on this block alone. Accuracy
+           * is scored over characters resolved, not keys pressed, so a letter
+           * that took several tries costs exactly one bad mark.
            */
           const baseline = blockBaselineRef.current;
           const totals = metricsRef.current;
           const durationMs = Math.max(0, totals.activeMs - baseline.activeMs);
           const keystrokes = totals.keystrokes - baseline.keystrokes;
           const correct = totals.correctChars - baseline.correctChars;
+          const scored = totals.scoredChars - baseline.scoredChars;
           const errors = totals.errors - baseline.errors;
 
           const completedIdx = idxRef.current;
@@ -858,7 +861,7 @@ export default function TypingPage() {
               return next;
             });
             const blockWpm = wpm(correct, durationMs);
-            const blockAccuracy = accuracy(keystrokes, errors);
+            const blockAccuracy = accuracy(scored, errors);
             setBlockResults((prior) => ({
               ...prior,
               [completedIdx]: {
@@ -960,7 +963,7 @@ export default function TypingPage() {
   const metrics = metricsRef.current;
   void tick; // the interval above drives HUD refreshes
   const liveWpm = wpm(metrics.correctChars, metrics.activeMs);
-  const liveAccuracy = accuracy(metrics.keystrokes, metrics.errors);
+  const liveAccuracy = accuracy(metrics.scoredChars, metrics.errors);
   const progress = book && idx !== null ? Math.min(100, (idx / Math.max(1, book.blockCount - 1)) * 100) : 0;
 
   if (!book || idx === null) {

@@ -159,6 +159,11 @@ export const sessions = sqliteTable(
     durationMs: integer('duration_ms').notNull(),
     keystrokes: integer('keystrokes').notNull(),
     correctChars: integer('correct_chars').notNull(),
+    /**
+     * Characters resolved, correct or fumbled. The denominator for accuracy,
+     * so a character retried several times counts once.
+     */
+    scoredChars: integer('scored_chars').notNull().default(0),
     errors: integer('errors').notNull(),
     blocksCompleted: integer('blocks_completed').notNull(),
     /** Split so prose and code speeds can be reported separately. */

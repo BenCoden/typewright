@@ -27,9 +27,18 @@ export interface BlockState {
    * Slots at every other status are empty strings.
    */
   typed: string[];
+  /**
+   * Whether each position has ever been mistyped, regardless of how many
+   * attempts it took to get right.
+   *
+   * Accuracy is scored per character, not per keystroke: fumbling the same
+   * letter four times before landing it is one bad mark, not four. Correcting
+   * a mistake still leaves the mark, because the reader did get it wrong.
+   */
+  fumbled: boolean[];
   /** Index of the next character to type. */
   pos: number;
-  /** True once pos reaches the end with no unresolved mistakes. */
+  /** True once every character has been resolved, mistakes and all. */
   done: boolean;
 }
 
@@ -58,6 +67,19 @@ export interface KeyOutcome {
   correctChars: number;
   /** The expected character when a mistake was made, for the error histogram. */
   missedKey: string | null;
+  /**
+   * True only on the first mistake at a given position. Later fumbles at the
+   * same character are still `correct: false` for feedback purposes, but they
+   * do not add another error to the score.
+   */
+  firstFumble: boolean;
+  /**
+   * How many characters the cursor moved past. This is the accuracy
+   * denominator: a mistake in `mark`/`fix` mode resolves its character, while
+   * in `block` mode the cursor holds and the character is resolved later by
+   * the correct keystroke, so it is only ever counted once.
+   */
+  resolved: number;
   /** The block was completed by this keystroke. */
   completed: boolean;
 }
@@ -76,6 +98,7 @@ export function createBlockState(expected: string, options: EngineOptions): Bloc
     expected,
     status: Array<CharStatus>(expected.length).fill('pending'),
     typed: Array<string>(expected.length).fill(''),
+    fumbled: Array<boolean>(expected.length).fill(false),
     pos: 0,
     done: expected.length === 0,
   };
@@ -99,10 +122,18 @@ function consumeIndent(state: BlockState): number {
   return filled;
 }
 
+/**
+ * A block finishes when the cursor reaches the end.
+ *
+ * Uncorrected mistakes no longer hold a block hostage — the reader typed the
+ * whole thing, so it is done and the accuracy score reflects what happened.
+ * `block` mistake mode still prevents the cursor advancing past a bad key, so
+ * a reader who wants zero mistakes can keep that guarantee through settings.
+ */
 function finish(state: BlockState): boolean {
   if (state.pos < state.expected.length) return false;
-  state.done = !state.status.includes('wrong');
-  return state.done;
+  state.done = true;
+  return true;
 }
 
 const NO_OP = (state: BlockState): KeyOutcome => ({
@@ -111,6 +142,8 @@ const NO_OP = (state: BlockState): KeyOutcome => ({
   correct: false,
   correctChars: 0,
   missedKey: null,
+  firstFumble: false,
+  resolved: 0,
   completed: false,
 });
 
@@ -123,6 +156,12 @@ export function applyKey(previous: BlockState, key: string, options: EngineOptio
     expected: previous.expected,
     status: [...previous.status],
     typed: [...previous.typed],
+    /*
+     * Fumble marks are carried forward, including across Backspace: once a
+     * character has been typed wrong, correcting or re-typing it does not
+     * un-ring the bell. Restarting the whole block is the only reset.
+     */
+    fumbled: [...previous.fumbled],
     pos: previous.pos,
     done: previous.done,
   };
@@ -158,7 +197,7 @@ export function applyKey(previous: BlockState, key: string, options: EngineOptio
       filled += 1;
     }
     const completed = finish(state);
-    return { state, counted: true, correct: true, correctChars: filled, missedKey: null, completed };
+    return { state, counted: true, correct: true, correctChars: filled, missedKey: null, firstFumble: false, resolved: filled, completed };
   }
 
   const typed = key === 'Enter' ? '\n' : key;
@@ -177,13 +216,22 @@ export function applyKey(previous: BlockState, key: string, options: EngineOptio
     if (typed === '\n' && options.autoIndent) correctChars += consumeIndent(state);
 
     const completed = finish(state);
-    return { state, counted: true, correct: true, correctChars, missedKey: null, completed };
+    return { state, counted: true, correct: true, correctChars, missedKey: null, firstFumble: false, resolved: correctChars, completed };
   }
 
   /* ---- A mistake ---- */
 
-  // 'fix' repairs the character so the page stays readable, but the error is
-  // still counted and the repaired character earns no credit.
+  /*
+   * Score the character, not the keystroke. The first wrong key at a position
+   * earns one bad mark; repeated fumbles at the same character are reported as
+   * incorrect for feedback but do not compound the penalty. Correcting the
+   * character later does not clear the mark — the reader still got it wrong.
+   */
+  const firstFumble = !state.fumbled[state.pos];
+  state.fumbled[state.pos] = true;
+
+  // 'fix' repairs the character so the page stays readable, but the mark stands
+  // and the repaired character earns no credit.
   state.status[state.pos] = options.mistakeMode === 'fix' ? 'correct' : 'wrong';
   state.typed[state.pos] = options.mistakeMode === 'fix' ? '' : key;
 
@@ -192,13 +240,17 @@ export function applyKey(previous: BlockState, key: string, options: EngineOptio
     if (options.autoIndent && expectedChar === '\n') consumeIndent(state);
   }
 
-  const completed = options.mistakeMode === 'block' ? false : finish(state);
+  const advanced = options.mistakeMode !== 'block';
+  const completed = advanced ? finish(state) : false;
   return {
     state,
     counted: true,
     correct: false,
     correctChars: 0,
     missedKey: expectedChar,
+    firstFumble,
+    // In block mode the cursor holds, so the character is scored by the retry.
+    resolved: advanced ? 1 : 0,
     completed,
   };
 }
@@ -270,6 +322,17 @@ export interface Metrics {
   activeMs: number;
   keystrokes: number;
   correctChars: number;
+  /**
+   * Characters resolved one way or the other: every position the cursor has
+   * moved past, correct or fumbled. This is the denominator for accuracy, so
+   * retrying a character does not inflate the total the way keystrokes do.
+   */
+  scoredChars: number;
+  /**
+   * Positions that were mistyped at least once. Counts each bad character
+   * once no matter how many attempts it took, so one stubborn letter is one
+   * bad mark rather than a pile of them.
+   */
   errors: number;
   blocksCompleted: number;
   proseChars: number;
@@ -284,6 +347,7 @@ export function emptyMetrics(): Metrics {
     activeMs: 0,
     keystrokes: 0,
     correctChars: 0,
+    scoredChars: 0,
     errors: 0,
     blocksCompleted: 0,
     proseChars: 0,
@@ -318,7 +382,13 @@ export function recordKey(
     activeMs: metrics.activeMs + billable,
     keystrokes: metrics.keystrokes + 1,
     correctChars: metrics.correctChars + outcome.correctChars,
-    errors: metrics.errors + (outcome.correct ? 0 : 1),
+    /*
+     * Count a character once, when the cursor moves past it. `resolved` is 0
+     * for a repeated fumble and for a held cursor in `block` mode, so the
+     * denominator never double-counts a character the reader retried.
+     */
+    scoredChars: metrics.scoredChars + outcome.resolved,
+    errors: metrics.errors + (outcome.firstFumble ? 1 : 0),
     proseMs: metrics.proseMs + (isCode ? 0 : billable),
     codeMs: metrics.codeMs + (isCode ? billable : 0),
     proseChars: metrics.proseChars + (isCode ? 0 : outcome.correctChars),
@@ -341,7 +411,16 @@ export function wpm(chars: number, ms: number): number {
   return Math.round(chars / 5 / (ms / 60000));
 }
 
-export function accuracy(keystrokes: number, errors: number): number {
-  if (keystrokes <= 0) return 100;
-  return Math.round(((keystrokes - errors) / keystrokes) * 1000) / 10;
+/**
+ * Accuracy as a percentage of characters typed cleanly on the first try.
+ *
+ * `scored` is the number of characters resolved, not the number of keys
+ * pressed, and `errors` counts each fumbled character once. Fixing a mistake
+ * therefore still costs accuracy, but fumbling the same letter repeatedly
+ * costs no more than fumbling it once.
+ */
+export function accuracy(scored: number, errors: number): number {
+  if (scored <= 0) return 100;
+  const clean = Math.max(0, scored - errors);
+  return Math.round((clean / scored) * 1000) / 10;
 }
