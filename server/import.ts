@@ -267,7 +267,7 @@ function splitOnWords(text: string, target: number): string[] {
 
 export function detectLang(code: string, hint?: string | null): string | null {
   if (hint) {
-    const m = hint.match(/(?:language|lang|brush:|highlight-source-)([a-z0-9+#-]+)/i);
+    const m = hint.match(/(?:language|lang|brush:|highlight-source-)[-:]?([a-z0-9+#]+)/i);
     if (m) return m[1].toLowerCase();
   }
 
@@ -298,6 +298,39 @@ function isAnnotation(el: HTMLElement): boolean {
   return /code-annotation|annotation-overlay|calloutlist/i.test(cls);
 }
 
+/**
+ * Text of a <pre>, with markup removed.
+ *
+ * `pre` is parsed as a raw-text element so its whitespace survives, which means
+ * any nested markup a syntax highlighter added is still sitting in the string.
+ * Line structure comes from real newlines, so only <br> needs translating.
+ */
+export function preText(el: HTMLElement): string {
+  const raw = el.innerHTML ?? '';
+
+  // Nothing nested: the parser already decoded entities for us.
+  if (!/<[a-z!/]/i.test(raw)) return el.textContent ?? '';
+
+  return decodeHtmlEntities(
+    raw
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(div|p|li|tr)>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+  );
+}
+
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#x([0-9a-f]+);/gi, (_m, code: string) => String.fromCodePoint(parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(parseInt(code, 10)))
+    .replace(/&amp;/g, '&');
+}
+
 function textOf(node: HtmlNode): string {
   // node-html-parser decodes entities for us; <br> needs manual handling.
   const html = (node as HTMLElement).innerHTML ?? '';
@@ -323,7 +356,7 @@ function walk(node: HtmlNode, ctx: WalkContext): void {
   if (SKIP_TAGS.has(tag)) return;
 
   if (tag === 'pre') {
-    const code = normalizeCode(el.textContent ?? '');
+    const code = normalizeCode(preText(el));
     if (code.replace(/\s/g, '').length) {
       ctx.blocks.push({
         kind: 'code',
@@ -389,7 +422,7 @@ function walk(node: HtmlNode, ctx: WalkContext): void {
   for (const child of el.childNodes) walk(child, ctx);
 }
 
-function htmlToBlocks(
+export function htmlToBlocks(
   html: string,
   section: string | null,
   resolveImage: (src: string) => string | null
@@ -415,7 +448,7 @@ const MIME_BY_EXT: Record<string, string> = {
   '.bmp': 'image/bmp',
 };
 
-function titleFromFilename(name: string): string {
+export function titleFromFilename(name: string): string {
   return path
     .basename(name, path.extname(name))
     .replace(/[_-]+/g, ' ')

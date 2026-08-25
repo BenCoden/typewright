@@ -49,6 +49,50 @@ Import both formats of the same book if you like — prefer the EPUB. On a Manni
 
 Scanned PDFs with no text layer are rejected with an explanation rather than imported as gibberish.
 
+## Documentation sites and wikis
+
+Paste a link on the library page and Typewright types the article — not the site chrome. Navigation bars, cookie banners, "copy" buttons, edit links, and reference markers are dropped before anything reaches the page.
+
+One page is imported at a time, but its table of contents comes with it. Every entry in that TOC is reachable from the keyboard, and an entry you have not read yet is fetched the moment you open it. Pasting one link therefore gives you the whole doc set without downloading it.
+
+### How a page is read
+
+Typewright picks a route per site, best first:
+
+| Route | Used for | What it gets |
+| --- | --- | --- |
+| **Markdown source** | Microsoft Learn and other docs published from Git | The original `.md` behind the page, so code fences are exact. `:::code` references are followed into the sample repository and the named `#region` is extracted. |
+| **Wiki API** | MediaWiki sites, including Wikipedia | The REST content endpoint, which returns clean article HTML. |
+| **Article extraction** | Everything else | The main article element, chosen by scoring candidates on text density. |
+| **Rendered page** | Sites that build their content in the browser | Optional. See below. |
+
+Microsoft Learn is worth calling out: the page you see in a browser is a JavaScript shell with no code in it at all. Typewright reads the Markdown source instead, which is why C# listings come through with their indentation intact.
+
+### Navigating a doc set
+
+| Keys | Action |
+| --- | --- |
+| `Ctrl` `;` | Jump palette over the whole table of contents. Type to filter, arrows to move, `Enter` to open. |
+| `Ctrl` `.` | Next page |
+| `Ctrl` `,` | Previous page |
+| `Ctrl` `O` | Contents panel — the doc set on one tab, this page's headings on the other |
+
+A tick marks pages already in your library. The rest are one keystroke and one fetch away.
+
+### Checking for updates
+
+Documentation changes. The refresh button on a page's card in the library re-fetches it and compares content; if nothing changed upstream it says so and leaves your progress alone. If the page did change it is rebuilt, which resets progress on that page.
+
+### Pages that need JavaScript
+
+Some sites ship an empty shell and assemble the article in the browser. Reading those needs a real browser, so headless Chromium runs as a second container that is **off by default**:
+
+```bash
+docker compose --profile render up -d
+```
+
+Without it, such a page fails with a message saying so rather than importing something empty. Everything above the "Rendered page" row works without it.
+
 ## Typing
 
 | Key | Behaviour |
@@ -72,6 +116,9 @@ Typing consumes every printable key, so commands sit on modifiers. `Ctrl+/` show
 | `Ctrl+←` | Back to the previous paragraph |
 | `Ctrl+Shift+→` / `Ctrl+Shift+←` | Jump between section headings |
 | `Ctrl+Backspace` | Start this block over |
+| `Ctrl+O` | Contents panel |
+| `Ctrl+;` | Jump to any page in the table of contents |
+| `Ctrl+.` / `Ctrl+,` | Next or previous page in a documentation set |
 
 **Reading mode** is a read-only pass over the same page at its own text size and leading — nothing is scored, and the HUD gets out of the way. Because no keystrokes are being graded there, the bare keys are free for navigation:
 
@@ -141,6 +188,11 @@ Long books stay responsive because the typing view only ever holds a 60-block wi
 | `GET` | `/api/books/:id/outline` | Chapter and section headings |
 | `POST` | `/api/import` | Multipart upload |
 | `POST` | `/api/import/text` | Paste a passage or snippet |
+| `POST` | `/api/import/url` | Import a documentation or wiki page, or return the copy already held |
+| `POST` | `/api/books/:id/refresh` | Re-fetch a web page and report whether it changed |
+| `GET` | `/api/books/:id/context` | Table of contents, position in it, previous and next pages |
+| `GET` | `/api/collections` | Doc sets and how much of each is imported |
+| `GET` | `/api/renderer` | Whether the optional Chromium sidecar is configured and answering |
 | `GET` | `/api/library` | Files in the watched folder |
 | `POST` | `/api/library/import` | Import from the watched folder |
 | `GET` | `/api/assets/:id` | An extracted figure |

@@ -15,6 +15,24 @@ import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
 /** Block kinds. Only `prose`, `heading`, and `code` are typeable. */
 export type BlockKind = 'prose' | 'heading' | 'code' | 'image';
 
+/**
+ * A documentation set imported from the web: one TOC, many pages.
+ *
+ * Books that came from a file have no collection. Books that came from a URL
+ * belong to one, which is what makes next/previous and the jump palette work.
+ */
+export const collections = sqliteTable('collections', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  title: text('title').notNull(),
+  /** The page that was originally pasted in. */
+  homeUrl: text('home_url').notNull(),
+  /** Host, shown on the library card. */
+  site: text('site').notNull(),
+  /** JSON array of TocEntry, in reading order. */
+  tocJson: text('toc_json').notNull().default('[]'),
+  addedAt: integer('added_at').notNull(),
+});
+
 export const books = sqliteTable('books', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   title: text('title').notNull(),
@@ -35,6 +53,20 @@ export const books = sqliteTable('books', {
   positionIdx: integer('position_idx').notNull().default(0),
   /** Cover image asset id, when the source had one. */
   coverAssetId: integer('cover_asset_id'),
+
+  /* --- Web pages ------------------------------------------------------ */
+  /** Set when this page came from a URL rather than a file. */
+  collectionId: integer('collection_id'),
+  sourceUrl: text('source_url'),
+  /** Raw source actually parsed (e.g. the raw.githubusercontent Markdown). */
+  upstreamUrl: text('upstream_url'),
+  /** Which adapter produced it: git-markdown | wiki | readable | rendered. */
+  adapter: text('adapter'),
+  /** Hash of the upstream text, so "check for updates" is a cheap comparison. */
+  contentHash: text('content_hash'),
+  fetchedAt: integer('fetched_at'),
+  /** Position of this page within its collection's TOC. */
+  tocIdx: integer('toc_idx'),
   addedAt: integer('added_at').notNull(),
   lastOpenedAt: integer('last_opened_at'),
 });
@@ -164,6 +196,15 @@ export const settings = sqliteTable('settings', {
   readingLineHeight: text('reading_line_height').notNull().default('m'),
 });
 
+/** One line of a documentation table of contents. */
+export interface TocEntry {
+  title: string;
+  /** Absolute URL, or null for a grouping row with no page of its own. */
+  url: string | null;
+  depth: number;
+}
+
+export type Collection = typeof collections.$inferSelect;
 export type Book = typeof books.$inferSelect;
 export type Block = typeof blocks.$inferSelect;
 export type Asset = typeof assets.$inferSelect;
@@ -195,6 +236,19 @@ export interface StatsSummary {
   recent: (Session & { bookTitle: string })[];
   worstKeys: { key: string; count: number }[];
   streak: number;
+}
+
+/** What the typing view needs to offer page navigation. */
+export interface PageContext {
+  collection: Collection;
+  toc: TocEntry[];
+  /** Index into `toc` of the page being read, or null if it is not listed. */
+  tocIdx: number | null;
+  /** Neighbouring TOC entries that have a URL. */
+  previous: TocEntry | null;
+  next: TocEntry | null;
+  /** Which TOC urls are already imported, mapped to their book id. */
+  imported: Record<string, number>;
 }
 
 /** Result of an import attempt, per file. */

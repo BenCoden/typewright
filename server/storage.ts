@@ -3,12 +3,14 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { and, desc, eq, gte, sql } from 'drizzle-orm';
 import fs from 'node:fs';
 import path from 'node:path';
-import { assets, blocks, books, sessions, settings } from '@shared/schema';
+import { assets, blocks, books, collections, sessions, settings } from '@shared/schema';
 import type {
   Asset,
   Block,
   BlockView,
   Book,
+  Collection,
+  TocEntry,
   Session,
   Settings,
   StatsSummary,
@@ -33,6 +35,15 @@ export const db = drizzle(sqlite);
 
 /** Idempotent schema creation, so a fresh volume self-heals on boot. */
 sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS collections (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    title    TEXT    NOT NULL,
+    home_url TEXT    NOT NULL,
+    site     TEXT    NOT NULL,
+    toc_json TEXT    NOT NULL DEFAULT '[]',
+    added_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS books (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     title            TEXT    NOT NULL,
@@ -125,6 +136,16 @@ function ensureColumn(table: string, column: string, ddl: string) {
   }
 }
 
+ensureColumn('books', 'collection_id', 'collection_id INTEGER');
+ensureColumn('books', 'source_url', 'source_url TEXT');
+ensureColumn('books', 'upstream_url', 'upstream_url TEXT');
+ensureColumn('books', 'adapter', 'adapter TEXT');
+ensureColumn('books', 'content_hash', 'content_hash TEXT');
+ensureColumn('books', 'fetched_at', 'fetched_at INTEGER');
+ensureColumn('books', 'toc_idx', 'toc_idx INTEGER');
+sqlite.exec('CREATE INDEX IF NOT EXISTS books_collection_idx ON books (collection_id)');
+sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS books_source_url_idx ON books (source_url) WHERE source_url IS NOT NULL');
+
 ensureColumn('settings', 'mistake_mode', "mistake_mode TEXT NOT NULL DEFAULT 'block'");
 ensureColumn('settings', 'advance_mode', "advance_mode TEXT NOT NULL DEFAULT 'auto'");
 ensureColumn('settings', 'ignore_case_prose', 'ignore_case_prose INTEGER NOT NULL DEFAULT 0');
@@ -183,10 +204,28 @@ export interface NewBook {
   blocks: NewBlock[];
   assets: NewAsset[];
   coverKey?: string;
+  /** Present only for pages imported from a URL. */
+  web?: {
+    collectionId: number;
+    sourceUrl: string;
+    upstreamUrl: string | null;
+    adapter: string;
+    contentHash: string;
+    tocIdx: number | null;
+  };
 }
 
 export interface IStorage {
   listBooks(): Book[];
+  listCollections(): Collection[];
+  getCollection(id: number): Collection | undefined;
+  /** Finds an existing collection for a site+TOC, or creates one. */
+  upsertCollection(input: { title: string; homeUrl: string; site: string; toc: TocEntry[] }): Collection;
+  updateCollectionToc(id: number, toc: TocEntry[]): void;
+  getBookByUrl(url: string): Book | undefined;
+  listCollectionBooks(collectionId: number): Book[];
+  /** Replaces a page's blocks in place, keeping its id and collection links. */
+  replaceBookContent(id: number, input: NewBook): Book | undefined;
   getBook(id: number): Book | undefined;
   createBook(input: NewBook): Book;
   deleteBook(id: number): void;
@@ -208,7 +247,105 @@ export interface IStorage {
 
 const TYPEABLE = new Set(['prose', 'heading', 'code']);
 
+function countBlocks(list: NewBlock[]) {
+  const typeable = list.filter((b) => TYPEABLE.has(b.kind));
+  return {
+    charCount: typeable.reduce((sum, b) => sum + b.text.length, 0),
+    wordCount: typeable.reduce((sum, b) => sum + b.text.split(/\s+/).filter(Boolean).length, 0),
+    blockCount: list.length,
+    typeableCount: typeable.length,
+    codeBlockCount: list.filter((b) => b.kind === 'code').length,
+    imageCount: list.filter((b) => b.kind === 'image').length,
+  };
+}
+
 class SqliteStorage implements IStorage {
+  listCollections(): Collection[] {
+    return db.select().from(collections).orderBy(desc(collections.addedAt)).all();
+  }
+
+  getCollection(id: number): Collection | undefined {
+    return db.select().from(collections).where(eq(collections.id, id)).get();
+  }
+
+  upsertCollection(input: {
+    title: string;
+    homeUrl: string;
+    site: string;
+    toc: TocEntry[];
+  }): Collection {
+    // One collection per TOC root: the same doc set imported twice should not
+    // split navigation across two cards.
+    const existing = db
+      .select()
+      .from(collections)
+      .where(and(eq(collections.site, input.site), eq(collections.title, input.title)))
+      .get();
+
+    if (existing) {
+      // A later page often carries a fuller TOC than the first one did.
+      if (input.toc.length > JSON.parse(existing.tocJson).length) {
+        this.updateCollectionToc(existing.id, input.toc);
+        return { ...existing, tocJson: JSON.stringify(input.toc) };
+      }
+      return existing;
+    }
+
+    return db
+      .insert(collections)
+      .values({
+        title: input.title,
+        homeUrl: input.homeUrl,
+        site: input.site,
+        tocJson: JSON.stringify(input.toc),
+        addedAt: Date.now(),
+      })
+      .returning()
+      .get();
+  }
+
+  updateCollectionToc(id: number, toc: TocEntry[]): void {
+    db.update(collections).set({ tocJson: JSON.stringify(toc) }).where(eq(collections.id, id)).run();
+  }
+
+  getBookByUrl(url: string): Book | undefined {
+    return db.select().from(books).where(eq(books.sourceUrl, url)).get();
+  }
+
+  listCollectionBooks(collectionId: number): Book[] {
+    return db.select().from(books).where(eq(books.collectionId, collectionId)).all();
+  }
+
+  /**
+   * Re-import in place: the page keeps its id, its collection, and its place in
+   * the TOC, but every block and asset is rebuilt. Progress resets, because the
+   * old position no longer means anything.
+   */
+  replaceBookContent(id: number, input: NewBook): Book | undefined {
+    const existing = this.getBook(id);
+    if (!existing) return undefined;
+
+    sqlite.transaction(() => {
+      db.delete(blocks).where(eq(blocks.bookId, id)).run();
+      db.delete(assets).where(eq(assets.bookId, id)).run();
+    })();
+    fs.rmSync(path.join(ASSETS_DIR, String(id)), { recursive: true, force: true });
+
+    this.writeContent(id, input);
+
+    return db
+      .update(books)
+      .set({
+        title: input.title,
+        positionIdx: 0,
+        contentHash: input.web?.contentHash ?? existing.contentHash,
+        fetchedAt: Date.now(),
+      })
+      .where(eq(books.id, id))
+      .returning()
+      .get();
+  }
+
   listBooks(): Book[] {
     return db
       .select()
@@ -222,12 +359,7 @@ class SqliteStorage implements IStorage {
   }
 
   createBook(input: NewBook): Book {
-    const typeable = input.blocks.filter((b) => TYPEABLE.has(b.kind));
-    const charCount = typeable.reduce((sum, b) => sum + b.text.length, 0);
-    const wordCount = typeable.reduce(
-      (sum, b) => sum + b.text.split(/\s+/).filter(Boolean).length,
-      0
-    );
+    const counts = countBlocks(input.blocks);
 
     const insert = sqlite.transaction(() => {
       const book = db
@@ -237,71 +369,86 @@ class SqliteStorage implements IStorage {
           author: input.author,
           sourceName: input.sourceName,
           format: input.format,
-          charCount,
-          wordCount,
-          blockCount: input.blocks.length,
-          typeableCount: typeable.length,
-          codeBlockCount: input.blocks.filter((b) => b.kind === 'code').length,
-          imageCount: input.blocks.filter((b) => b.kind === 'image').length,
+          ...counts,
           addedAt: Date.now(),
+          collectionId: input.web?.collectionId ?? null,
+          sourceUrl: input.web?.sourceUrl ?? null,
+          upstreamUrl: input.web?.upstreamUrl ?? null,
+          adapter: input.web?.adapter ?? null,
+          contentHash: input.web?.contentHash ?? null,
+          fetchedAt: input.web ? Date.now() : null,
+          tocIdx: input.web?.tocIdx ?? null,
         })
         .returning()
         .get();
 
-      // Images land on disk under data/assets/<bookId>/ with flattened names.
-      const bookAssetDir = path.join(ASSETS_DIR, String(book.id));
-      fs.mkdirSync(bookAssetDir, { recursive: true });
-
-      const assetIdByKey = new Map<string, number>();
-      const assetStmt = sqlite.prepare(
-        'INSERT INTO assets (book_id, rel_path, mime, width, height, bytes) VALUES (?, ?, ?, ?, ?, ?)'
-      );
-
-      for (const asset of input.assets) {
-        const safeName = asset.key.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(-120);
-        const relPath = path.posix.join(String(book.id), safeName);
-        fs.writeFileSync(path.join(ASSETS_DIR, relPath), asset.data);
-        const result = assetStmt.run(
-          book.id,
-          relPath,
-          asset.mime,
-          asset.width ?? null,
-          asset.height ?? null,
-          asset.data.length
-        );
-        assetIdByKey.set(asset.key, Number(result.lastInsertRowid));
-      }
-
-      const blockStmt = sqlite.prepare(
-        `INSERT INTO blocks (book_id, idx, kind, text, section, label, lang, asset_id, note)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      );
-      input.blocks.forEach((b, i) => {
-        blockStmt.run(
-          book.id,
-          i,
-          b.kind,
-          b.text,
-          b.section ?? null,
-          b.label ?? null,
-          b.lang ?? null,
-          b.imageKey ? assetIdByKey.get(b.imageKey) ?? null : null,
-          b.note ?? null
-        );
-      });
-
-      const coverAssetId = input.coverKey ? assetIdByKey.get(input.coverKey) ?? null : null;
-      if (coverAssetId) {
-        db.update(books).set({ coverAssetId }).where(eq(books.id, book.id)).run();
-        return { ...book, coverAssetId };
-      }
-      return book;
+      const coverAssetId = this.writeContent(book.id, input);
+      return coverAssetId ? { ...book, coverAssetId } : book;
     });
 
     return insert();
   }
 
+  /**
+   * Writes a page's assets and blocks. Shared by first import and re-import, so
+   * the two can never drift apart. Returns the cover asset id, if any.
+   */
+  private writeContent(bookId: number, input: NewBook): number | null {
+    // Images land on disk under data/assets/<bookId>/ with flattened names.
+    fs.mkdirSync(path.join(ASSETS_DIR, String(bookId)), { recursive: true });
+
+    const assetIdByKey = new Map<string, number>();
+    const assetStmt = sqlite.prepare(
+      'INSERT INTO assets (book_id, rel_path, mime, width, height, bytes) VALUES (?, ?, ?, ?, ?, ?)'
+    );
+
+    for (const asset of input.assets) {
+      const safeName = asset.key.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(-120);
+      const relPath = path.posix.join(String(bookId), safeName);
+      fs.writeFileSync(path.join(ASSETS_DIR, relPath), asset.data);
+      const result = assetStmt.run(
+        bookId,
+        relPath,
+        asset.mime,
+        asset.width ?? null,
+        asset.height ?? null,
+        asset.data.length
+      );
+      assetIdByKey.set(asset.key, Number(result.lastInsertRowid));
+    }
+
+    const blockStmt = sqlite.prepare(
+      `INSERT INTO blocks (book_id, idx, kind, text, section, label, lang, asset_id, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    input.blocks.forEach((b, i) => {
+      blockStmt.run(
+        bookId,
+        i,
+        b.kind,
+        b.text,
+        b.section ?? null,
+        b.label ?? null,
+        b.lang ?? null,
+        b.imageKey ? assetIdByKey.get(b.imageKey) ?? null : null,
+        b.note ?? null
+      );
+    });
+
+    const counts = countBlocks(input.blocks);
+    const coverAssetId = input.coverKey ? assetIdByKey.get(input.coverKey) ?? null : null;
+
+    db.update(books)
+      .set({ ...counts, coverAssetId })
+      .where(eq(books.id, bookId))
+      .run();
+
+    return coverAssetId;
+  }
+
   deleteBook(id: number): void {
+    const collectionId = this.getBook(id)?.collectionId ?? null;
+
     sqlite.transaction(() => {
       db.delete(blocks).where(eq(blocks.bookId, id)).run();
       db.delete(sessions).where(eq(sessions.bookId, id)).run();
@@ -310,6 +457,18 @@ class SqliteStorage implements IStorage {
     })();
 
     fs.rmSync(path.join(ASSETS_DIR, String(id)), { recursive: true, force: true });
+
+    // Drop the collection once its last page is gone.
+    if (collectionId) {
+      const remaining = db
+        .select()
+        .from(books)
+        .where(eq(books.collectionId, collectionId))
+        .all();
+      if (!remaining.length) {
+        db.delete(collections).where(eq(collections.id, collectionId)).run();
+      }
+    }
   }
 
   updateBook(id: number, patch: { title?: string; author?: string }): Book | undefined {

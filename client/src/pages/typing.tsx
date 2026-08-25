@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useRoute } from 'wouter';
+import { Link, useLocation, useRoute } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import {
   ArrowLeft,
   BookOpen,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Keyboard,
   List,
   Pause,
@@ -12,6 +14,12 @@ import {
   SkipForward,
 } from 'lucide-react';
 import { ShortcutsOverlay } from '@/components/shortcuts';
+import {
+  ContentsPanel,
+  JumpPalette,
+  useOpenPage,
+  usePageContext,
+} from '@/components/page-nav';
 import { playError } from '@/lib/sound';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
@@ -71,6 +79,8 @@ export default function TypingPage() {
   /** A read-only view of the current position — no keystrokes are scored. */
   const [readingMode, setReadingMode] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [, navigate] = useLocation();
 
   const { data: blocks } = useQuery<BlockView[]>({
     queryKey: ['/api/books', bookId, 'blocks', fetchFrom],
@@ -94,6 +104,13 @@ export default function TypingPage() {
   /* ---------------------------------------------------------------- *
    * Position
    * ---------------------------------------------------------------- */
+
+  // A different page means a fresh cursor, window, and reading position.
+  useEffect(() => {
+    setIdx(null);
+    setFetchFrom(0);
+    scrolledOnceRef.current = false;
+  }, [bookId]);
 
   // Resume where the book was left off, once.
   useEffect(() => {
@@ -148,6 +165,31 @@ export default function TypingPage() {
   const typing = isTypeable(currentBlock, skipCode);
 
   // Case is only ever relaxed in prose; a listing that ignores case is wrong.
+  /* ---------------------------------------------------------------- *
+   * Documentation navigation
+   * ---------------------------------------------------------------- */
+
+  const { data: pageContext } = usePageContext(bookId);
+  const openPage = useOpenPage();
+  const [pendingUrl, setPendingUrl] = useState<string | null>(null);
+
+  /** Opens another page in the same doc set, importing it first if needed. */
+  const openUrl = useCallback(
+    (url: string) => {
+      setPendingUrl(url);
+      openPage.mutate(url, {
+        onSuccess: ({ bookId: target }) => {
+          setPendingUrl(null);
+          setJumpOpen(false);
+          setOutlineOpen(false);
+          if (target !== bookId) navigate(`/type/${target}`);
+        },
+        onError: () => setPendingUrl(null),
+      });
+    },
+    [openPage, navigate, bookId]
+  );
+
   const options: EngineOptions = useMemo(
     () => ({
       mistakeMode: (settings?.mistakeMode ?? 'block') as EngineOptions['mistakeMode'],
@@ -372,6 +414,41 @@ export default function TypingPage() {
         return;
       }
 
+      /* ---- Documentation set navigation ---- */
+
+      if (ctrl && (event.key === 'o' || event.key === 'O')) {
+        event.preventDefault();
+        setOutlineOpen((open) => !open);
+        return;
+      }
+
+      if (ctrl && event.key === ';' && pageContext) {
+        event.preventDefault();
+        setJumpOpen((open) => !open);
+        return;
+      }
+
+      if (ctrl && event.key === '.' && pageContext?.next?.url) {
+        event.preventDefault();
+        openUrl(pageContext.next.url);
+        return;
+      }
+
+      if (ctrl && event.key === ',' && pageContext?.previous?.url) {
+        event.preventDefault();
+        openUrl(pageContext.previous.url);
+        return;
+      }
+
+      // The palette owns the keyboard while it is open.
+      if (jumpOpen) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setJumpOpen(false);
+        }
+        return;
+      }
+
       if (shortcutsOpen) {
         if (event.key === 'Escape' || event.key === 'Enter') {
           event.preventDefault();
@@ -532,6 +609,9 @@ export default function TypingPage() {
     autoPauseMs,
     advanceMode,
     settings?.soundOnError,
+    pageContext,
+    jumpOpen,
+    openUrl,
   ]);
 
   /* ---------------------------------------------------------------- *
@@ -609,16 +689,51 @@ export default function TypingPage() {
             <div className="truncate text-sm font-medium text-foreground" data-testid="text-book-title">
               {book.title}
             </div>
-            {currentBlock?.section && (
-              <div className="truncate text-xs text-muted-foreground">{currentBlock.section}</div>
-            )}
+            <div className="truncate text-xs text-muted-foreground">
+              {pageContext ? (
+                <>
+                  <span>{pageContext.collection.title}</span>
+                  {currentBlock?.section && <span> · {currentBlock.section}</span>}
+                </>
+              ) : (
+                currentBlock?.section
+              )}
+            </div>
           </div>
 
+          {pageContext && (
+            <>
+              <button
+                type="button"
+                disabled={!pageContext.previous?.url || openPage.isPending}
+                onClick={() => pageContext.previous?.url && openUrl(pageContext.previous.url)}
+                className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2 disabled:opacity-40"
+                aria-label={
+                  pageContext.previous ? `Previous page: ${pageContext.previous.title}` : 'No previous page'
+                }
+                title={pageContext.previous ? `${pageContext.previous.title} — Ctrl+,` : undefined}
+                data-testid="button-prev-page"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                disabled={!pageContext.next?.url || openPage.isPending}
+                onClick={() => pageContext.next?.url && openUrl(pageContext.next.url)}
+                className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2 disabled:opacity-40"
+                aria-label={pageContext.next ? `Next page: ${pageContext.next.title}` : 'No next page'}
+                title={pageContext.next ? `${pageContext.next.title} — Ctrl+.` : undefined}
+                data-testid="button-next-page"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={() => setOutlineOpen((o) => !o)}
             className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
-            aria-label="Chapters"
+            aria-label="Contents"
             data-testid="button-outline"
           >
             <List className="h-4 w-4" />
@@ -665,49 +780,65 @@ export default function TypingPage() {
         </div>
       </header>
 
-      {/* ---- Chapter jump ---- */}
-      {/* Fixed to the header rather than placed in the flow, so it is reachable
-          no matter how far down the book you have scrolled. */}
-      {outlineOpen && (
-        <>
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setOutlineOpen(false)}
-            aria-hidden
+      {/* ---- Contents: the doc set's TOC, or this page's headings ---- */}
+      {outlineOpen &&
+        (pageContext ? (
+          <ContentsPanel
+            context={pageContext}
+            currentUrl={book.sourceUrl ?? null}
+            outline={outline ?? []}
+            pendingUrl={pendingUrl}
+            onOpenUrl={openUrl}
+            onJumpBlock={(target) => {
+              void flushSession();
+              setFetchFrom(Math.max(0, target - BEHIND));
+              setIdx(target);
+              savePosition(target);
+              setOutlineOpen(false);
+            }}
+            onClose={() => setOutlineOpen(false)}
           />
-          <div className="fixed left-1/2 top-16 z-50 w-[min(36rem,calc(100vw-2rem))] -translate-x-1/2">
-            <div className="max-h-[60vh] overflow-y-auto rounded-lg border border-border bg-card p-2 shadow-lg">
-            {(outline ?? []).length === 0 && (
-              <div className="px-3 py-2 text-sm text-muted-foreground">No headings in this book.</div>
-            )}
-            {(outline ?? []).map((entry) => (
-              <button
-                key={entry.idx}
-                type="button"
-                onClick={() => {
-                  void flushSession();
-                  setFetchFrom(Math.max(0, entry.idx - BEHIND));
-                  setIdx(entry.idx);
-                  savePosition(entry.idx);
-                  setOutlineOpen(false);
-                }}
-                className="block w-full truncate rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground hover-elevate active-elevate-2"
-                data-testid={`button-outline-${entry.idx}`}
-              >
-                {entry.section}
-              </button>
-            ))}
+        ) : (
+          /* A file-based book has chapters but no page navigation. */
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setOutlineOpen(false)} aria-hidden />
+            <div className="fixed left-1/2 top-16 z-50 w-[min(36rem,calc(100vw-2rem))] -translate-x-1/2">
+              <div className="max-h-[60vh] overflow-y-auto rounded-lg border border-border bg-card p-2 shadow-lg">
+                {(outline ?? []).length === 0 && (
+                  <div className="px-3 py-2 text-sm text-muted-foreground">
+                    No headings in this book.
+                  </div>
+                )}
+                {(outline ?? []).map((entry) => (
+                  <button
+                    key={entry.idx}
+                    type="button"
+                    onClick={() => {
+                      void flushSession();
+                      setFetchFrom(Math.max(0, entry.idx - BEHIND));
+                      setIdx(entry.idx);
+                      savePosition(entry.idx);
+                      setOutlineOpen(false);
+                    }}
+                    className="block w-full truncate rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground hover-elevate active-elevate-2"
+                    data-testid={`button-outline-${entry.idx}`}
+                  >
+                    {entry.section}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-        </>
-      )}
+          </>
+        ))}
 
-      {/* ---- Reading mode banner ---- */}
-      {readingMode && (
-        <div className="sticky top-14 z-30 border-b border-primary/30 bg-primary/10 px-4 py-1.5 text-center text-xs text-primary">
-          Reading mode — nothing is scored. ↓ ↑ or J K to move, Enter to type from here, Ctrl+M to
-          switch back.
-        </div>
+      {jumpOpen && pageContext && (
+        <JumpPalette
+          context={pageContext}
+          currentUrl={book.sourceUrl ?? null}
+          pendingUrl={pendingUrl}
+          onOpenUrl={openUrl}
+          onClose={() => setJumpOpen(false)}
+        />
       )}
 
       {/* ---- Reading surface ---- */}

@@ -9,7 +9,9 @@ import { ASSETS_DIR, storage } from './storage';
 import type { NewBook } from './storage';
 import { SUPPORTED_EXTENSIONS, finalizeBlocks, parseFile } from './import';
 import type { ParsedBook } from './import';
-import type { ImportResult } from '@shared/schema';
+import { importUrl, normalizeUrl, rendererStatus } from './web-import';
+import type { WebPage } from './web-import';
+import type { ImportResult, PageContext, TocEntry } from '@shared/schema';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -26,7 +28,7 @@ function fail(res: Response, status: number, message: string) {
 }
 
 /** Shared tail of every import path: parse -> chunk -> persist. */
-function persist(parsed: ParsedBook, sourceName: string): ImportResult['imported'][number] {
+function buildPayload(parsed: ParsedBook, sourceName: string, web?: NewBook['web']): NewBook {
   const settings = storage.getSettings();
   const finalized = finalizeBlocks(parsed, {
     chunkSize: settings.chunkSize,
@@ -61,9 +63,18 @@ function persist(parsed: ParsedBook, sourceName: string): ImportResult['imported
         height: image.height,
       })),
     coverKey: parsed.coverKey,
+    web,
   };
 
-  const book = storage.createBook(payload);
+  return payload;
+}
+
+function persist(
+  parsed: ParsedBook,
+  sourceName: string,
+  web?: NewBook['web']
+): ImportResult['imported'][number] {
+  const book = storage.createBook(buildPayload(parsed, sourceName, web));
 
   return {
     id: book.id,
@@ -73,6 +84,51 @@ function persist(parsed: ParsedBook, sourceName: string): ImportResult['imported
     imageCount: book.imageCount,
     notes: parsed.notes,
   };
+}
+
+/**
+ * Files off the local disk and pages off the web converge here: attach the page
+ * to its collection, remember where it sits in the TOC, then persist.
+ */
+function persistWebPage(page: WebPage): {
+  imported: ImportResult['imported'][number];
+  collectionId: number;
+  adapter: string;
+} {
+  const collection = storage.upsertCollection({
+    title: page.collection.title,
+    homeUrl: page.collection.homeUrl,
+    site: page.collection.site,
+    toc: page.collection.toc,
+  });
+
+  const toc = JSON.parse(collection.tocJson) as TocEntry[];
+  const tocIdx = toc.findIndex((entry) => entry.url && sameUrl(entry.url, page.sourceUrl));
+
+  // The card shows the hostname already; the doc set is the useful subtitle.
+  page.author = page.collection.title === page.collection.site ? page.author : page.collection.title;
+
+  const imported = persist(page, page.sourceUrl, {
+    collectionId: collection.id,
+    sourceUrl: page.sourceUrl,
+    upstreamUrl: page.upstreamUrl,
+    adapter: page.adapter,
+    contentHash: page.contentHash,
+    tocIdx: tocIdx >= 0 ? tocIdx : null,
+  });
+
+  return { imported, collectionId: collection.id, adapter: page.adapter };
+}
+
+/** TOC hrefs and page URLs differ by trailing slashes and index documents. */
+function sameUrl(a: string, b: string): boolean {
+  const key = (url: string) =>
+    url
+      .replace(/[#?].*$/, '')
+      .replace(/\/(index|default)\.\w+$/, '/')
+      .replace(/\/+$/, '')
+      .toLowerCase();
+  return key(a) === key(b);
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -211,6 +267,143 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       .catch((error: unknown) =>
         fail(res, 422, error instanceof Error ? error.message : 'Could not process that text.')
       );
+  });
+
+  /* ---------------------------------------------------------------- *
+   * Web pages and documentation sets
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Import a URL, or hand back the page if it is already in the library. Used
+   * both by the paste-a-link box and by navigating the table of contents, so
+   * jumping to an unread page just works.
+   */
+  app.post('/api/import/url', async (req, res) => {
+    const body = z.object({ url: z.string().min(8).max(2000) }).safeParse(req.body);
+    if (!body.success) return fail(res, 400, 'Give it a http or https URL.');
+
+    let url: string;
+    try {
+      url = normalizeUrl(body.data.url);
+    } catch (error) {
+      return fail(res, 400, error instanceof Error ? error.message : 'That URL is not valid.');
+    }
+
+    const existing = storage.getBookByUrl(url);
+    if (existing) {
+      return res.json({
+        bookId: existing.id,
+        collectionId: existing.collectionId,
+        alreadyImported: true,
+        adapter: existing.adapter,
+        notes: [],
+      });
+    }
+
+    try {
+      const page = await importUrl(url);
+      const result = persistWebPage(page);
+      res.status(201).json({
+        bookId: result.imported.id,
+        collectionId: result.collectionId,
+        alreadyImported: false,
+        adapter: result.adapter,
+        title: result.imported.title,
+        notes: result.imported.notes,
+      });
+    } catch (error) {
+      fail(res, 422, error instanceof Error ? error.message : 'Could not import that page.');
+    }
+  });
+
+  /** Re-fetch a page and rebuild it in place. Progress on it resets. */
+  app.post('/api/books/:id/refresh', async (req, res) => {
+    const id = idParam.safeParse(req.params.id);
+    if (!id.success) return fail(res, 400, 'Invalid book id.');
+
+    const book = storage.getBook(id.data);
+    if (!book) return fail(res, 404, 'Page not found.');
+    if (!book.sourceUrl) return fail(res, 400, 'That page did not come from a URL.');
+
+    try {
+      const page = await importUrl(book.sourceUrl);
+
+      if (page.contentHash === book.contentHash) {
+        return res.json({ changed: false, message: 'That page has not changed upstream.' });
+      }
+
+      const payload = buildPayload(page, book.sourceUrl, {
+        collectionId: book.collectionId!,
+        sourceUrl: book.sourceUrl,
+        upstreamUrl: page.upstreamUrl,
+        adapter: page.adapter,
+        contentHash: page.contentHash,
+        tocIdx: book.tocIdx,
+      });
+
+      const updated = storage.replaceBookContent(book.id, payload);
+      res.json({ changed: true, book: updated, notes: page.notes });
+    } catch (error) {
+      fail(res, 422, error instanceof Error ? error.message : 'Could not refresh that page.');
+    }
+  });
+
+  app.get('/api/collections', (_req, res) => {
+    res.json(
+      storage.listCollections().map((collection) => ({
+        ...collection,
+        pageCount: storage.listCollectionBooks(collection.id).length,
+        tocCount: (JSON.parse(collection.tocJson) as TocEntry[]).filter((e) => e.url).length,
+      }))
+    );
+  });
+
+  /** Everything the typing view needs to offer page navigation. */
+  app.get('/api/books/:id/context', (req, res) => {
+    const id = idParam.safeParse(req.params.id);
+    if (!id.success) return fail(res, 400, 'Invalid book id.');
+
+    const book = storage.getBook(id.data);
+    if (!book) return fail(res, 404, 'Page not found.');
+    if (!book.collectionId) return res.json(null);
+
+    const collection = storage.getCollection(book.collectionId);
+    if (!collection) return res.json(null);
+
+    const toc = JSON.parse(collection.tocJson) as TocEntry[];
+
+    // Position by stored index when we have it, else by matching the URL.
+    let tocIdx =
+      book.tocIdx !== null && toc[book.tocIdx]?.url && sameUrl(toc[book.tocIdx].url!, book.sourceUrl ?? '')
+        ? book.tocIdx
+        : toc.findIndex((entry) => entry.url && book.sourceUrl && sameUrl(entry.url, book.sourceUrl));
+    if (tocIdx < 0) tocIdx = -1;
+
+    const withUrl = (from: number, step: -1 | 1): TocEntry | null => {
+      for (let i = from + step; i >= 0 && i < toc.length; i += step) {
+        if (toc[i].url) return toc[i];
+      }
+      return null;
+    };
+
+    const imported: Record<string, number> = {};
+    for (const page of storage.listCollectionBooks(collection.id)) {
+      if (page.sourceUrl) imported[page.sourceUrl] = page.id;
+    }
+
+    const context: PageContext = {
+      collection,
+      toc,
+      tocIdx: tocIdx >= 0 ? tocIdx : null,
+      previous: tocIdx >= 0 ? withUrl(tocIdx, -1) : null,
+      next: tocIdx >= 0 ? withUrl(tocIdx, 1) : null,
+      imported,
+    };
+    res.json(context);
+  });
+
+  app.get('/api/renderer', async (_req, res) => {
+    res.json(await rendererStatus());
   });
 
   /* ---------------------------------------------------------------- *

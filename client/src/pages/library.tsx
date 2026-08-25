@@ -7,6 +7,8 @@ import {
   Code2,
   ClipboardPaste,
   FolderOpen,
+  Globe,
+  RefreshCw,
   Image as ImageIcon,
   Loader2,
   Trash2,
@@ -20,12 +22,21 @@ import type { Book, ImportResult } from '@shared/schema';
 
 const ACCEPT = '.epub,.pdf,.txt,.md,.markdown,.html,.htm';
 
+/** How a web page was read, in words rather than adapter ids. */
+const ADAPTER_LABEL: Record<string, string> = {
+  'git-markdown': 'Markdown source',
+  wiki: 'wiki API',
+  readable: 'article extraction',
+  rendered: 'rendered page',
+};
+
 export default function LibraryPage() {
   const { toast } = useToast();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
+  const [url, setUrl] = useState('');
   const [paste, setPaste] = useState({ title: '', text: '', asCode: false });
 
   const { data: books, isLoading } = useQuery<Book[]>({ queryKey: ['/api/books'] });
@@ -93,6 +104,56 @@ export default function LibraryPage() {
       toast({ title: 'Could not add that', description: error.message, variant: 'destructive' }),
   });
 
+  const importFromUrl = useMutation({
+    mutationFn: async (target: string) => {
+      const res = await apiRequest('POST', '/api/import/url', { url: target });
+      return (await res.json()) as {
+        bookId: number;
+        title?: string;
+        adapter: string;
+        alreadyImported: boolean;
+        notes: string[];
+      };
+    },
+    onSuccess: (payload) => {
+      setUrl('');
+      queryClient.invalidateQueries({ queryKey: ['/api/books'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/collections'] });
+      toast({
+        title: payload.alreadyImported ? 'Already in your library' : `Imported ${payload.title ?? 'page'}`,
+        description: payload.alreadyImported
+          ? 'Opening the copy you already have.'
+          : `Read via the ${ADAPTER_LABEL[payload.adapter] ?? payload.adapter} route.${
+              payload.notes.length ? ` ${payload.notes.join(' ')}` : ''
+            }`,
+      });
+    },
+    onError: (error: Error) =>
+      toast({
+        title: 'Could not import that page',
+        description: error.message.replace(/^\d+:\s*/, '').replace(/^\{"message":"|"\}$/g, ''),
+        variant: 'destructive',
+      }),
+  });
+
+  const refresh = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest('POST', `/api/books/${id}/refresh`, {});
+      return (await res.json()) as { changed: boolean; message?: string };
+    },
+    onSuccess: (payload) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/books'] });
+      toast({
+        title: payload.changed ? 'Page updated' : 'No change upstream',
+        description: payload.changed
+          ? 'The page was re-imported, so progress on it has reset.'
+          : payload.message,
+      });
+    },
+    onError: (error: Error) =>
+      toast({ title: 'Refresh failed', description: error.message, variant: 'destructive' }),
+  });
+
   const remove = useMutation({
     mutationFn: async (id: number) => apiRequest('DELETE', `/api/books/${id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['/api/books'] }),
@@ -119,6 +180,49 @@ export default function LibraryPage() {
           listings are typed verbatim, and figures are extracted and shown inline as you go.
         </p>
       </div>
+
+      {/* ---- Import from a URL ---- */}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (url.trim()) importFromUrl.mutate(url.trim());
+        }}
+        className="rounded-xl border border-card-border bg-card p-4"
+      >
+        <label htmlFor="url" className="flex items-center gap-2 text-sm text-foreground">
+          <Globe className="h-4 w-4 text-muted-foreground" />
+          Paste a documentation or wiki link
+        </label>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <input
+            id="url"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="https://learn.microsoft.com/en-us/dotnet/core/introduction"
+            className="min-w-0 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-testid="input-url"
+          />
+          <button
+            type="submit"
+            disabled={importFromUrl.isPending || url.trim().length < 8}
+            className="flex items-center justify-center gap-2 rounded-md border border-primary-border bg-primary px-4 py-2 text-sm text-primary-foreground hover-elevate active-elevate-2 disabled:opacity-50"
+            data-testid="button-import-url"
+          >
+            {importFromUrl.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Reading the page…
+              </>
+            ) : (
+              'Import page'
+            )}
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Only the article is typed — navigation, banners, and buttons are dropped. The page's table
+          of contents comes with it, so the rest of the set is a keystroke away.
+        </p>
+      </form>
 
       {/* ---- Import ---- */}
       <div
@@ -291,7 +395,13 @@ export default function LibraryPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {books!.map((book) => (
-            <BookCard key={book.id} book={book} onDelete={() => remove.mutate(book.id)} />
+            <BookCard
+              key={book.id}
+              book={book}
+              onDelete={() => remove.mutate(book.id)}
+              onRefresh={() => refresh.mutate(book.id)}
+              refreshing={refresh.isPending && refresh.variables === book.id}
+            />
           ))}
         </div>
       )}
@@ -299,7 +409,17 @@ export default function LibraryPage() {
   );
 }
 
-function BookCard({ book, onDelete }: { book: Book; onDelete: () => void }) {
+function BookCard({
+  book,
+  onDelete,
+  onRefresh,
+  refreshing,
+}: {
+  book: Book;
+  onDelete: () => void;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
   const progress = Math.min(100, Math.round((book.positionIdx / Math.max(1, book.blockCount - 1)) * 100));
 
   return (
@@ -332,7 +452,9 @@ function BookCard({ book, onDelete }: { book: Book; onDelete: () => void }) {
             <p className="mt-1 truncate text-xs text-muted-foreground">{book.author}</p>
 
             <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-              <span className="uppercase tracking-wide">{book.format}</span>
+              <span className="uppercase tracking-wide">
+                {book.sourceUrl ? new URL(book.sourceUrl).hostname.replace(/^www\./, '') : book.format}
+              </span>
               {book.codeBlockCount > 0 && (
                 <span className="flex items-center gap-1">
                   <Code2 className="h-3 w-3" />
@@ -363,15 +485,30 @@ function BookCard({ book, onDelete }: { book: Book; onDelete: () => void }) {
         </div>
       </Link>
 
-      <button
-        type="button"
-        onClick={onDelete}
-        className="absolute right-2 top-2 rounded-md bg-card/80 p-1.5 text-muted-foreground opacity-0 transition-opacity hover-elevate group-hover:opacity-100 focus-visible:opacity-100"
-        aria-label={`Remove ${book.title}`}
-        data-testid={`button-delete-${book.id}`}
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
+      <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        {book.sourceUrl && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing}
+            className="rounded-md bg-card/80 p-1.5 text-muted-foreground hover-elevate"
+            aria-label={`Check ${book.title} for updates`}
+            title="Check for updates"
+            data-testid={`button-refresh-${book.id}`}
+          >
+            <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onDelete}
+          className="rounded-md bg-card/80 p-1.5 text-muted-foreground hover-elevate"
+          aria-label={`Remove ${book.title}`}
+          data-testid={`button-delete-${book.id}`}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
   );
 }

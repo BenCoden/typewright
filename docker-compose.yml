@@ -15,4 +15,16 @@ services:
     environment:
       TYPEWRIGHT_DATA: /data
       TYPEWRIGHT_LIBRARY: /books
+      # Only reachable when the renderer profile is running.
+      TYPEWRIGHT_RENDERER: http://renderer:5001
+    restart: unless-stopped
+
+  # Optional: headless Chromium, for pages that only exist after JavaScript runs.
+  #   docker compose --profile render up -d
+  renderer:
+    build: ./renderer
+    container_name: typewright-renderer
+    profiles: ['render']
+    expose:
+      - '5001'
     restart: unless-stopped
