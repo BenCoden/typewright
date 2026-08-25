@@ -15,7 +15,7 @@ import type { BlockLink, BlockView } from '@shared/schema';
  * than a novel.
  */
 
-export type BlockMode = 'done' | 'typed' | 'active' | 'ahead';
+export type BlockMode = 'done' | 'typed' | 'skipped' | 'active' | 'ahead';
 
 interface BlockProps {
   block: BlockView;
@@ -551,6 +551,7 @@ function TextBlock({
 
 function modeClass(mode: BlockMode): string {
   if (mode === 'typed') return 'tw-block-typed';
+  if (mode === 'skipped') return 'tw-block-skipped';
   if (mode === 'done') return 'tw-block-done';
   return 'tw-block-ahead';
 }
@@ -577,6 +578,25 @@ function BlockChip({ summary }: { summary: { wpm: number; accuracy: number; keys
   );
 }
 
+/**
+ * Mirror of the typed chip for blocks the reader deliberately jumped past.
+ *
+ * A visible marker matters because a page with a mix of typed and untouched
+ * paragraphs is easy to misread; the label removes the ambiguity.
+ */
+function SkippedChip() {
+  return (
+    <div
+      className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground"
+      data-testid="block-skipped"
+    >
+      <span className="inline-flex items-center gap-1 rounded-full border border-dashed border-border/70 bg-muted/40 px-2 py-0.5 uppercase tracking-wide text-[10px]">
+        Skipped
+      </span>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Dispatcher
  * ------------------------------------------------------------------ */
@@ -592,6 +612,7 @@ export const ReaderBlock = memo(function ReaderBlock(props: BlockProps) {
     <>
       {body}
       {props.summary && props.mode === 'typed' ? <BlockChip summary={props.summary} /> : null}
+      {props.mode === 'skipped' ? <SkippedChip /> : null}
     </>
   );
 });

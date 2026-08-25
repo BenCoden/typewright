@@ -509,6 +509,19 @@
     color: hsl(var(--foreground) / 0.92);
   }
 
+  /*
+   * Blocks the reader deliberately jumped past. Kept muted like the default
+   * skipped-done tone, but with a subtle strikethrough underline so a page
+   * that mixes typed and skipped sections is unambiguous at a glance.
+   */
+  .tw-block-skipped {
+    color: hsl(var(--type-done));
+    text-decoration-line: line-through;
+    text-decoration-color: hsl(var(--type-done) / 0.35);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+
   /* Blocks not yet reached, below the cursor. */
   .tw-block-ahead {
     color: hsl(var(--type-pending) / 0.62);

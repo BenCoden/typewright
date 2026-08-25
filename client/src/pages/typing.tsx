@@ -151,6 +151,7 @@ export default function TypingPage() {
     setFetchFrom(0);
     setLinksOpen(false);
     setBlockResults({});
+    setSkippedBlocks(new Set());
     scrolledOnceRef.current = false;
   }, [bookId]);
 
@@ -291,6 +292,13 @@ export default function TypingPage() {
    * summary under the block use this map.
    */
   const [blockResults, setBlockResults] = useState<Record<number, BlockSummary>>({});
+  /**
+   * Indexes of blocks the reader deliberately moved past without completing.
+   * A block enters this set when advance/retreat/jump leaves it while the
+   * block state is not `done`. Typed blocks never enter this set even if the
+   * reader later revisits and skips them.
+   */
+  const [skippedBlocks, setSkippedBlocks] = useState<Set<number>>(() => new Set());
 
   const flushSession = useCallback(async () => {
     const metrics = metricsRef.current;
@@ -369,6 +377,26 @@ export default function TypingPage() {
   const goTo = useCallback(
     (target: number) => {
       const clamped = Math.max(0, target);
+      /*
+       * Jumping forward past the current block (outline click, next-section
+       * shortcut, next-page button) counts as a skip unless the block was
+       * completed. Jumping to the same block or earlier is a navigation, not
+       * a skip.
+       */
+      const current = idxRef.current;
+      if (
+        current !== null &&
+        clamped > current &&
+        stateRef.current &&
+        !stateRef.current.done
+      ) {
+        setSkippedBlocks((prior) => {
+          if (prior.has(current)) return prior;
+          const next = new Set(prior);
+          next.add(current);
+          return next;
+        });
+      }
       setFetchFrom((from) => (clamped < from || clamped > from + WINDOW - REFETCH_MARGIN ? Math.max(0, clamped - BEHIND) : from));
       setIdx(clamped);
       savePosition(clamped);
@@ -376,15 +404,37 @@ export default function TypingPage() {
     [savePosition]
   );
 
+  /**
+   * Record a block as skipped. Typed blocks are never marked skipped, so
+   * revisiting a typed block and moving off it does not clear the typed chip.
+   */
+  const markSkipped = useCallback((blockIdx: number) => {
+    setSkippedBlocks((prior) => {
+      if (prior.has(blockIdx)) return prior;
+      const next = new Set(prior);
+      next.add(blockIdx);
+      return next;
+    });
+  }, []);
+
   const advance = useCallback(() => {
     setIdx((current) => {
       if (current === null) return current;
+      /*
+       * A block that is being left behind without being completed is a skip,
+       * whether the reader pressed Skip, Ctrl+Right, or clicked next. The
+       * `stateRef` is checked before we move so a just-completed block is not
+       * misfiled as skipped.
+       */
+      if (!stateRef.current?.done) {
+        markSkipped(current);
+      }
       const next = nextTypeable(current + 1);
       const target = next ?? current + 1;
       savePosition(target);
       return target;
     });
-  }, [nextTypeable, savePosition]);
+  }, [nextTypeable, savePosition, markSkipped]);
 
   /** Walks back to the previous block that expects keystrokes. */
   const retreat = useCallback(() => {
@@ -678,6 +728,13 @@ export default function TypingPage() {
 
           const completedIdx = idxRef.current;
           if (completedIdx !== null && keystrokes > 0) {
+            // A block that was previously skipped and then re-typed loses the skip mark.
+            setSkippedBlocks((prior) => {
+              if (!prior.has(completedIdx)) return prior;
+              const next = new Set(prior);
+              next.delete(completedIdx);
+              return next;
+            });
             setBlockResults((prior) => ({
               ...prior,
               [completedIdx]: {
@@ -751,17 +808,21 @@ export default function TypingPage() {
       const block = byIdx.get(i);
       if (!block) continue;
       /*
-       * A block above the cursor is either a page you typed through or one you
-       * skipped past. The reader tells them apart with a colour and a summary
-       * chip; the map is written on completion and lives for the session.
+       * A block above the cursor is either a page you typed through, one you
+       * deliberately jumped past, or one that was never active. Each state
+       * gets its own colour and its own chip so a mid-page mix is unambiguous.
        */
       const summary = blockResults[i] ?? null;
-      const mode: BlockMode =
-        i === idx ? 'active' : i < idx ? (summary ? 'typed' : 'done') : 'ahead';
+      let mode: BlockMode;
+      if (i === idx) mode = 'active';
+      else if (i > idx) mode = 'ahead';
+      else if (summary) mode = 'typed';
+      else if (skippedBlocks.has(i)) mode = 'skipped';
+      else mode = 'done';
       out.push({ block, mode, summary });
     }
     return out;
-  }, [idx, byIdx, readingMode, blockResults]);
+  }, [idx, byIdx, readingMode, blockResults, skippedBlocks]);
 
   const metrics = metricsRef.current;
   void tick; // the interval above drives HUD refreshes
