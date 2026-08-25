@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import dns from 'node:dns/promises';
 import path from 'node:path';
 import { parse as parseHtml, type HTMLElement } from 'node-html-parser';
 import {
@@ -54,20 +55,110 @@ export interface WebPage extends ParsedBook {
 
 /* ------------------------------------------------------------------ *
  * Fetching
+ *
+ * Import URLs come from whatever the reader pastes, and the fetch happens on
+ * the server, so every hop is treated as untrusted: the host must resolve to a
+ * public address before the request goes out, and redirects are followed one at
+ * a time so a public URL cannot bounce the server onto the loopback interface,
+ * the LAN, or a cloud metadata endpoint.
  * ------------------------------------------------------------------ */
 
+/** Maximum redirect hops, each of which is re-validated. */
+const MAX_REDIRECTS = 5;
+
+/**
+ * True for addresses that must never be reachable through an import.
+ *
+ * Covers loopback, RFC1918 private ranges, link-local (which includes the
+ * 169.254.169.254 cloud metadata address), carrier-grade NAT, and the IPv6
+ * equivalents including IPv4-mapped forms.
+ */
+function isBlockedAddress(address: string): boolean {
+  const ip = address.toLowerCase().replace(/^\[|\]$/g, '');
+
+  // IPv4-mapped IPv6 (::ffff:127.0.0.1) is checked as its IPv4 form.
+  const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  const target = mapped ? mapped[1] : ip;
+
+  const v4 = target.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const [a, b] = v4.slice(1).map(Number);
+    if (a === 0 || a === 127 || a === 10) return true;
+    if (a === 169 && b === 254) return true; // link-local + metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    if (a >= 224) return true; // multicast and reserved
+    return false;
+  }
+
+  if (target === '::' || target === '::1') return true;
+  if (/^f[cd]/.test(target)) return true; // fc00::/7 unique-local
+  if (/^fe[89ab]/.test(target)) return true; // fe80::/10 link-local
+  return false;
+}
+
+/** Resolves a hostname and throws unless every address it maps to is public. */
+async function assertPublicHost(hostname: string): Promise<void> {
+  const bare = hostname.replace(/^\[|\]$/g, '');
+
+  // A literal IP needs no lookup; check it directly.
+  if (/^[\d.]+$/.test(bare) || bare.includes(':')) {
+    if (isBlockedAddress(bare)) {
+      throw new Error('That address is not reachable for import.');
+    }
+    return;
+  }
+
+  let records: { address: string }[];
+  try {
+    records = await dns.lookup(bare, { all: true });
+  } catch {
+    throw new Error(`Could not resolve ${hostname}.`);
+  }
+  if (!records.length) throw new Error(`Could not resolve ${hostname}.`);
+  for (const { address } of records) {
+    if (isBlockedAddress(address)) {
+      throw new Error('That address is not reachable for import.');
+    }
+  }
+}
+
 async function request(url: string, accept: string): Promise<Response> {
-  const response = await fetch(url, {
-    redirect: 'follow',
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    headers: {
-      'User-Agent': USER_AGENT,
-      Accept: accept,
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText} for ${url}`);
-  return response;
+  let current = url;
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    const parsed = new URL(current);
+    if (!/^https?:$/.test(parsed.protocol)) {
+      throw new Error('Only http and https URLs can be imported.');
+    }
+    await assertPublicHost(parsed.hostname);
+
+    const response = await fetch(current, {
+      // Manual redirects so each hop's host is validated before it is followed.
+      redirect: 'manual',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: accept,
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+    });
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location) throw new Error(`Redirect without a target for ${current}`);
+      current = new URL(location, current).toString();
+      continue;
+    }
+
+    if (!response.ok) {
+      throw new Error(`${response.status} ${response.statusText} for ${current}`);
+    }
+    return response;
+  }
+
+  throw new Error(`Too many redirects for ${url}`);
 }
 
 async function fetchText(url: string, accept = 'text/html,text/plain,*/*'): Promise<string> {

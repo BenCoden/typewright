@@ -314,15 +314,22 @@ function embedSrc(src: string, autoplay: boolean): string | null {
   }
 }
 
-/** The page to open when inline playback is refused. */
-function watchUrl(src: string): string {
+/**
+ * The page to open when inline playback is refused.
+ *
+ * Returns null for anything that is not an http(s) URL so a hostile source in
+ * imported content cannot become a clickable `javascript:` link. The caller
+ * renders plain text instead of an anchor when this is null.
+ */
+function watchUrl(src: string): string | null {
   try {
     const url = new URL(src);
+    if (!/^https?:$/.test(url.protocol)) return null;
     const id = url.pathname.match(/\/embed\/([\w-]+)/)?.[1];
     if (id && /youtube/i.test(url.hostname)) return `https://www.youtube.com/watch?v=${id}`;
-    return src;
+    return url.toString();
   } catch {
-    return src;
+    return null;
   }
 }
 
@@ -395,9 +402,9 @@ function Embed({ block, mode }: { block: BlockView; mode: BlockMode }) {
 
       <figcaption className="flex items-center justify-between gap-3 border-t border-card-border px-4 py-3 text-sm text-muted-foreground">
         <span className="truncate">{caption}</span>
-        {block.src && (
+        {block.src && watchUrl(block.src) && (
           <a
-            href={watchUrl(block.src)}
+            href={watchUrl(block.src)!}
             target="_blank"
             rel="noreferrer"
             className="shrink-0 text-xs underline decoration-dotted underline-offset-2 hover:text-foreground"

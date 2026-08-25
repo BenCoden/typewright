@@ -549,7 +549,14 @@ function walk(node: HtmlNode, ctx: WalkContext): void {
 
     let src: string;
     try {
-      src = new URL(raw, ctx.pageUrl).toString();
+      const resolved = new URL(raw, ctx.pageUrl);
+      /*
+       * Imported markup is untrusted. Only http(s) media is kept, so a crafted
+       * `javascript:` or `data:` source in a book can never reach the reader
+       * and become a live link or a navigation target.
+       */
+      if (!/^https?:$/.test(resolved.protocol)) return;
+      src = resolved.toString();
     } catch {
       return;
     }
