@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { parse as parseHtml, type HTMLElement, type Node as HtmlNode } from 'node-html-parser';
 import path from 'node:path';
-import type { BlockKind } from '@shared/schema';
+import type { BlockKind, BlockLink } from '@shared/schema';
 
 /**
  * Import pipeline: file bytes -> ordered blocks -> chunked typing units.
@@ -29,6 +29,10 @@ export interface RawBlock {
   note?: string | null;
   /** Key into ParsedBook.images for image blocks. */
   imageKey?: string;
+  /** Links inside `text`, with offsets into it. */
+  links?: BlockLink[];
+  /** For embeds: the video or page URL. */
+  src?: string;
 }
 
 export interface ExtractedImage {
@@ -120,7 +124,13 @@ const CODE_MAP: Record<string, string> = {
   '\u2212': '-',
 };
 
-const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+/*
+ * Control characters are stripped from every text path — except the three used
+ * as link markers (U+0001 open, U+0002 close, U+0003 separator), which have to
+ * survive normalisation and sentence splitting. They are removed at the end, by
+ * readLinkMarkers or stripLinkMarkers.
+ */
+const CONTROL = /[\u0000\u0004-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
 export function normalizeProse(input: string, normalizePunctuation: boolean): string {
   let text = input.replace(/\r\n?/g, '\n').replace(INVISIBLE, '').replace(ODD_SPACES, ' ');
@@ -346,7 +356,151 @@ interface WalkContext {
   section: string | null;
   /** Resolves an <img src> to a key in ParsedBook.images. Returns null if missing. */
   resolveImage: (src: string) => string | null;
+  /**
+   * Page URL, set only for web imports. Its presence turns on link capture and
+   * embedded-media blocks — a book off the disk has neither.
+   */
+  pageUrl?: string;
 }
+
+/*
+ * Anchors are marked in place with two control characters before any text is
+ * extracted. The text then goes through exactly the same normalising as
+ * everything else, and the markers come out at the end carrying the offsets
+ * the reader needs to underline the words that were linked.
+ */
+export const LINK_OPEN = '\u0001';
+const LINK_SEP = '\u0003';
+export const LINK_CLOSE = '\u0002';
+
+/**
+ * Wraps link text in markers that carry the destination with them.
+ *
+ * The URL travels inside the string rather than in a side table because the text
+ * is still going to be normalised and split into sentence runs before it is
+ * stored. Anything held alongside would drift; this cannot.
+ */
+export function markLink(url: string, internal: boolean, label: string): string {
+  return `${LINK_OPEN}${internal ? '1' : '0'}${url}${LINK_SEP}${label}${LINK_CLOSE}`;
+}
+
+export function stripLinkMarkers(text: string): string {
+  return text.replace(
+    new RegExp(`${LINK_OPEN}[^${LINK_SEP}${LINK_CLOSE}]*${LINK_SEP}|[${LINK_OPEN}${LINK_CLOSE}]`, 'g'),
+    ''
+  );
+}
+
+/** Marks every usable anchor in place, and reports how many were marked. */
+function markLinks(root: HTMLElement, pageUrl: string): number {
+  let marked = 0;
+  const host = (() => {
+    try {
+      return new URL(pageUrl).hostname;
+    } catch {
+      return '';
+    }
+  })();
+
+  for (const anchor of root.querySelectorAll('a')) {
+    const href = anchor.getAttribute('href');
+    const label = anchor.textContent.replace(/\s+/g, ' ').trim();
+    // Heading-anchor widgets label themselves with a zero-width character.
+    if (!href || !label.replace(INVISIBLE, '').trim()) continue;
+
+    // A link to a spot on this same page is not somewhere to navigate to.
+    if (href.startsWith('#')) continue;
+
+    // Anchors inside a listing are part of the code; leave them alone.
+    let parent = anchor.parentNode as HTMLElement | null;
+    let insidePre = false;
+    while (parent) {
+      if ((parent.rawTagName ?? '').toLowerCase() === 'pre') {
+        insidePre = true;
+        break;
+      }
+      parent = parent.parentNode as HTMLElement | null;
+    }
+    if (insidePre) continue;
+
+    let url: URL;
+    try {
+      url = new URL(href, pageUrl);
+    } catch {
+      continue;
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
+
+    // Same page, different fragment: still not a destination.
+    if (url.href.split('#')[0] === pageUrl.split('#')[0]) continue;
+
+    anchor.textContent = markLink(url.toString(), url.hostname === host, label);
+    marked += 1;
+  }
+
+  return marked;
+}
+
+/**
+ * Pulls the markers back out of a finished string, turning each pair into a
+ * link with offsets into the cleaned text.
+ */
+export function readLinkMarkers(text: string): { text: string; links: BlockLink[] } {
+  if (!text.includes(LINK_OPEN)) return { text, links: [] };
+
+  let out = '';
+  const links: BlockLink[] = [];
+  let open: { at: number; url: string; internal: boolean } | null = null;
+  let header: string | null = null;
+
+  for (const char of text) {
+    if (char === LINK_OPEN) {
+      header = '';
+      continue;
+    }
+    if (header !== null) {
+      if (char === LINK_SEP) {
+        open = { at: out.length, url: header.slice(1), internal: header.startsWith('1') };
+        header = null;
+      } else {
+        header += char;
+      }
+      continue;
+    }
+    if (char === LINK_CLOSE) {
+      // A run that got split mid-link keeps only the half it still holds.
+      if (open && out.length > open.at) {
+        links.push({
+          text: out.slice(open.at),
+          url: open.url,
+          start: open.at,
+          end: out.length,
+          internal: open.internal,
+        });
+      }
+      open = null;
+      continue;
+    }
+    out += char;
+  }
+
+  // An unterminated marker means the link ran past the end of this run.
+  if (open && out.length > open.at) {
+    links.push({
+      text: out.slice(open.at),
+      url: open.url,
+      start: open.at,
+      end: out.length,
+      internal: open.internal,
+    });
+  }
+
+  return { text: out, links };
+}
+
+/** Video and media embeds worth showing. Anything else is site furniture. */
+const EMBED_HOSTS =
+  /(?:youtube\.com|youtube-nocookie\.com|youtu\.be|vimeo\.com|player\.vimeo\.com|dailymotion\.com|loom\.com|wistia\.(?:com|net)|streamable\.com|codepen\.io|codesandbox\.io|jsfiddle\.net|asciinema\.org)/i;
 
 function walk(node: HtmlNode, ctx: WalkContext): void {
   const el = node as HTMLElement;
@@ -356,7 +510,7 @@ function walk(node: HtmlNode, ctx: WalkContext): void {
   if (SKIP_TAGS.has(tag)) return;
 
   if (tag === 'pre') {
-    const code = normalizeCode(preText(el));
+    const code = normalizeCode(stripLinkMarkers(preText(el)));
     if (code.replace(/\s/g, '').length) {
       ctx.blocks.push({
         kind: 'code',
@@ -382,8 +536,38 @@ function walk(node: HtmlNode, ctx: WalkContext): void {
     return;
   }
 
+  /* ---- Embedded media: video players and interactive samples ---- */
+  if (tag === 'iframe' || tag === 'video') {
+    if (!ctx.pageUrl) return;
+
+    const raw =
+      el.getAttribute('src') ??
+      el.getAttribute('data-src') ??
+      el.querySelector('source')?.getAttribute('src') ??
+      '';
+    if (!raw) return;
+
+    let src: string;
+    try {
+      src = new URL(raw, ctx.pageUrl).toString();
+    } catch {
+      return;
+    }
+
+    // A bare <video> is real media; an <iframe> only counts if it hosts one.
+    if (tag === 'iframe' && !EMBED_HOSTS.test(src)) return;
+
+    ctx.blocks.push({
+      kind: 'embed',
+      text: (el.getAttribute('title') ?? el.getAttribute('aria-label') ?? '').trim(),
+      section: ctx.section,
+      src,
+    });
+    return;
+  }
+
   if (isAnnotation(el)) {
-    const note = textOf(el).replace(/\s+/g, ' ').trim();
+    const note = stripLinkMarkers(textOf(el)).replace(/\s+/g, ' ').trim();
     const last = ctx.blocks[ctx.blocks.length - 1];
     if (note && last && (last.kind === 'code' || last.kind === 'image')) {
       last.note = last.note ? `${last.note} ${note}` : note;
@@ -400,7 +584,7 @@ function walk(node: HtmlNode, ctx: WalkContext): void {
         last.text = heading;
         return;
       }
-      if (tag === 'h1' || tag === 'h2' || tag === 'h3') ctx.section = heading;
+      if (tag === 'h1' || tag === 'h2' || tag === 'h3') ctx.section = stripLinkMarkers(heading);
       ctx.blocks.push({ kind: 'heading', text: heading, section: ctx.section });
       return;
     }
@@ -425,11 +609,16 @@ function walk(node: HtmlNode, ctx: WalkContext): void {
 export function htmlToBlocks(
   html: string,
   section: string | null,
-  resolveImage: (src: string) => string | null
+  resolveImage: (src: string) => string | null,
+  /** Web imports pass the page URL, which turns on links and media embeds. */
+  pageUrl?: string
 ): { blocks: RawBlock[]; section: string | null } {
   const root = parseHtml(html, { blockTextElements: { script: false, style: false, pre: true } });
   const body = root.querySelector('body') ?? root;
-  const ctx: WalkContext = { blocks: [], section, resolveImage };
+
+  if (pageUrl) markLinks(body as HTMLElement, pageUrl);
+
+  const ctx: WalkContext = { blocks: [], section, resolveImage, pageUrl };
   for (const child of body.childNodes) walk(child, ctx);
   return { blocks: ctx.blocks, section: ctx.section };
 }
@@ -912,26 +1101,38 @@ export function finalizeBlocks(parsed: ParsedBook, options: ImportOptions): RawB
       continue;
     }
 
-    if (block.kind === 'image') {
+    // Figures and embeds are shown, not typed, so their captions carry no links.
+    if (block.kind === 'image' || block.kind === 'embed') {
+      const caption = (text: string | null | undefined) =>
+        text ? normalizeProse(stripLinkMarkers(text), options.normalizePunctuation) : null;
+
       out.push({
         ...block,
-        text: normalizeProse(block.text, options.normalizePunctuation),
-        label: block.label ? normalizeProse(block.label, options.normalizePunctuation) : null,
-        note: block.note ? normalizeProse(block.note, options.normalizePunctuation) : null,
+        text: caption(block.text) ?? '',
+        label: caption(block.label),
+        note: caption(block.note),
       });
       continue;
     }
 
     const normalized = normalizeProse(block.text, options.normalizePunctuation);
-    if (normalized.length < 2) continue;
+    if (stripLinkMarkers(normalized).trim().length < 2) continue;
 
     if (block.kind === 'heading') {
-      out.push({ ...block, text: normalized });
+      const { text, links } = readLinkMarkers(normalized);
+      out.push({ ...block, text, links: links.length ? links : undefined });
       continue;
     }
 
+    /*
+     * Prose is split into sentence runs, so link offsets are worked out per run
+     * after the split. A link that straddles a boundary is reported on both
+     * sides, which is what you want when the words are underlined in place.
+     */
     for (const run of segmentProse(normalized, options.chunkSize)) {
-      out.push({ kind: 'prose', text: run, section: block.section });
+      const { text, links } = readLinkMarkers(run);
+      if (text.trim().length < 2) continue;
+      out.push({ kind: 'prose', text, section: block.section, links: links.length ? links : undefined });
     }
   }
 

@@ -1,9 +1,9 @@
 import { memo } from 'react';
-import { ImageOff } from 'lucide-react';
+import { ImageOff, Play } from 'lucide-react';
 import { assetUrl } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
 import type { BlockState } from '@/lib/typing';
-import type { BlockView } from '@shared/schema';
+import type { BlockLink, BlockView } from '@shared/schema';
 
 /**
  * The reading surface.
@@ -43,16 +43,30 @@ const STATUS_CLASS = {
   skipped: 'tw-char-skipped',
 } as const;
 
+/** Character indexes covered by a link, so the linked words can be marked. */
+function linkedChars(links: BlockLink[] | undefined, length: number): Set<number> | null {
+  if (!links?.length) return null;
+
+  const marked = new Set<number>();
+  for (const link of links) {
+    for (let i = Math.max(0, link.start); i < Math.min(length, link.end); i += 1) marked.add(i);
+  }
+  return marked.size ? marked : null;
+}
+
 const CharRun = memo(function CharRun({
   state,
   showNewlines,
   markIncorrectWords,
+  links,
 }: {
   state: BlockState;
   showNewlines: boolean;
   markIncorrectWords?: boolean;
+  links?: BlockLink[];
 }) {
   const chars = [...state.expected];
+  const linked = linkedChars(links, chars.length);
 
   // When on, every character sharing a word with a mistake is underlined,
   // not just the missed one — easier to spot at a glance.
@@ -105,7 +119,8 @@ const CharRun = memo(function CharRun({
               STATUS_CLASS[status],
               current && 'tw-char-current',
               showAsError && 'tw-char-wrong',
-              wordUnderline && 'underline decoration-destructive decoration-2 underline-offset-2'
+              wordUnderline && 'underline decoration-destructive decoration-2 underline-offset-2',
+              linked?.has(i) && 'tw-linked'
             )}
           >
             {body}
@@ -216,8 +231,106 @@ function CodeBlock({ block, mode, state, fontSize, markIncorrectWords, showNewli
 }
 
 /* ------------------------------------------------------------------ *
+ * Embedded media
+ * ------------------------------------------------------------------ */
+
+/** Rewrites a watch URL into something that can sit in an iframe. */
+function embedSrc(src: string): string | null {
+  try {
+    const url = new URL(src);
+
+    if (/(^|\.)youtu\.be$/i.test(url.hostname)) {
+      return `https://www.youtube-nocookie.com/embed${url.pathname}`;
+    }
+    if (/(^|\.)youtube(-nocookie)?\.com$/i.test(url.hostname)) {
+      const id = url.searchParams.get('v');
+      return id ? `https://www.youtube-nocookie.com/embed/${id}` : url.toString();
+    }
+    if (/(^|\.)vimeo\.com$/i.test(url.hostname) && !url.hostname.startsWith('player.')) {
+      return `https://player.vimeo.com/video${url.pathname}`;
+    }
+
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** A video or interactive sample from the page. Watched, never typed. */
+function Embed({ block, mode }: { block: BlockView; mode: BlockMode }) {
+  const src = block.src ? embedSrc(block.src) : null;
+  const isVideoFile = Boolean(block.src && /\.(mp4|webm|ogg|mov)(\?|$)/i.test(block.src));
+
+  return (
+    <figure
+      className={cn(
+        'my-8 overflow-hidden rounded-lg border border-card-border bg-card transition-opacity',
+        mode === 'ahead' && 'opacity-70'
+      )}
+      data-testid={`embed-block-${block.idx}`}
+    >
+      {src ? (
+        isVideoFile ? (
+          <video src={src} controls preload="metadata" className="aspect-video w-full bg-black" />
+        ) : (
+          <iframe
+            src={src}
+            title={block.text || 'Embedded media'}
+            loading="lazy"
+            allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+            referrerPolicy="strict-origin-when-cross-origin"
+            className="aspect-video w-full border-0 bg-black"
+          />
+        )
+      ) : (
+        <div className="flex items-center gap-2 px-4 py-8 text-sm text-muted-foreground">
+          <Play className="h-4 w-4" />
+          Media could not be loaded
+        </div>
+      )}
+
+      <figcaption className="flex items-center justify-between gap-3 border-t border-card-border px-4 py-3 text-sm text-muted-foreground">
+        <span className="truncate">{block.text || 'Embedded media'}</span>
+        {block.src && (
+          <a
+            href={block.src}
+            target="_blank"
+            rel="noreferrer"
+            className="shrink-0 text-xs underline decoration-dotted underline-offset-2 hover:text-foreground"
+          >
+            Open on the site
+          </a>
+        )}
+      </figcaption>
+    </figure>
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * Prose and headings
  * ------------------------------------------------------------------ */
+
+/** Splits text so the words that were links can be marked without being typed differently. */
+function LinkedText({ text, links }: { text: string; links: BlockLink[] }) {
+  const ordered = [...links].sort((a, b) => a.start - b.start);
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+
+  for (const [i, link] of ordered.entries()) {
+    if (link.start < cursor || link.end > text.length) continue;
+    if (link.start > cursor) parts.push(text.slice(cursor, link.start));
+    parts.push(
+      <span key={i} className="tw-linked">
+        {text.slice(link.start, link.end)}
+      </span>
+    );
+    cursor = link.end;
+  }
+  parts.push(text.slice(cursor));
+
+  return <>{parts}</>;
+}
 
 function TextBlock({
   block,
@@ -247,7 +360,14 @@ function TextBlock({
       data-testid={`text-block-${block.idx}`}
     >
       {active ? (
-        <CharRun state={state} showNewlines={false} markIncorrectWords={markIncorrectWords} />
+        <CharRun
+          state={state}
+          showNewlines={false}
+          markIncorrectWords={markIncorrectWords}
+          links={block.links}
+        />
+      ) : block.links?.length ? (
+        <LinkedText text={block.text} links={block.links} />
       ) : (
         block.text
       )}
@@ -261,6 +381,7 @@ function TextBlock({
 
 export const ReaderBlock = memo(function ReaderBlock(props: BlockProps) {
   if (props.block.kind === 'image') return <Figure block={props.block} mode={props.mode} />;
+  if (props.block.kind === 'embed') return <Embed block={props.block} mode={props.mode} />;
   if (props.block.kind === 'code') return <CodeBlock {...props} />;
   return <TextBlock {...props} />;
 });

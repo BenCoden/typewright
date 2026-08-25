@@ -31,6 +31,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: ['Ctrl', 'Backspace'], label: 'Start this block over', scope: 'typing' },
 
   { keys: ['Ctrl', 'O'], label: 'Contents: the doc set, or this page', scope: 'both' },
+  { keys: ['Ctrl', 'L'], label: 'Links on this page, and where they appeared', scope: 'both' },
   { keys: ['Ctrl', ';'], label: 'Jump to any page in the table of contents', scope: 'both' },
   { keys: ['Ctrl', '.'], label: 'Next page in the documentation set', scope: 'both' },
   { keys: ['Ctrl', ','], label: 'Previous page in the documentation set', scope: 'both' },

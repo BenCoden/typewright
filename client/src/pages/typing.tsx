@@ -7,6 +7,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Link2,
   Keyboard,
   List,
   Pause,
@@ -20,6 +21,7 @@ import {
   useOpenPage,
   usePageContext,
 } from '@/components/page-nav';
+import { LinksPanel, usePageLinks } from '@/components/links-panel';
 import { playError } from '@/lib/sound';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { cn } from '@/lib/utils';
@@ -80,6 +82,7 @@ export default function TypingPage() {
   const [readingMode, setReadingMode] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [jumpOpen, setJumpOpen] = useState(false);
+  const [linksOpen, setLinksOpen] = useState(false);
   const [, navigate] = useLocation();
 
   const { data: blocks } = useQuery<BlockView[]>({
@@ -109,6 +112,7 @@ export default function TypingPage() {
   useEffect(() => {
     setIdx(null);
     setFetchFrom(0);
+    setLinksOpen(false);
     scrolledOnceRef.current = false;
   }, [bookId]);
 
@@ -170,6 +174,7 @@ export default function TypingPage() {
    * ---------------------------------------------------------------- */
 
   const { data: pageContext } = usePageContext(bookId);
+  const { data: pageLinks, isLoading: linksLoading } = usePageLinks(bookId, linksOpen);
   const openPage = useOpenPage();
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
 
@@ -415,6 +420,12 @@ export default function TypingPage() {
       }
 
       /* ---- Documentation set navigation ---- */
+
+      if (ctrl && (event.key === 'l' || event.key === 'L')) {
+        event.preventDefault();
+        setLinksOpen((open) => !open);
+        return;
+      }
 
       if (ctrl && (event.key === 'o' || event.key === 'O')) {
         event.preventDefault();
@@ -731,6 +742,19 @@ export default function TypingPage() {
           )}
           <button
             type="button"
+            onClick={() => setLinksOpen((o) => !o)}
+            className={cn(
+              'rounded-md p-2 hover-elevate active-elevate-2',
+              linksOpen ? 'bg-secondary text-foreground' : 'text-muted-foreground'
+            )}
+            aria-label="Links on this page"
+            title="Links on this page — Ctrl+L"
+            data-testid="button-links"
+          >
+            <Link2 className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
             onClick={() => setOutlineOpen((o) => !o)}
             className="rounded-md p-2 text-muted-foreground hover-elevate active-elevate-2"
             aria-label="Contents"
@@ -831,6 +855,23 @@ export default function TypingPage() {
           </>
         ))}
 
+      {linksOpen && (
+        <LinksPanel
+          links={pageLinks ?? []}
+          loading={linksLoading}
+          currentIdx={idx}
+          pendingUrl={pendingUrl}
+          onJumpBlock={(target) => {
+            void flushSession();
+            setFetchFrom(Math.max(0, target - BEHIND));
+            setIdx(target);
+            savePosition(target);
+          }}
+          onOpenPage={openUrl}
+          onClose={() => setLinksOpen(false)}
+        />
+      )}
+
       {jumpOpen && pageContext && (
         <JumpPalette
           context={pageContext}
@@ -842,7 +883,12 @@ export default function TypingPage() {
       )}
 
       {/* ---- Reading surface ---- */}
-      <div className="mx-auto max-w-3xl px-4 pt-10">
+      <div
+        className={cn(
+          'mx-auto max-w-3xl px-4 pt-10 transition-[padding] duration-200',
+          linksOpen && 'lg:pr-[22rem]'
+        )}
+      >
         {finished ? (
           <div className="rounded-xl border border-card-border bg-card px-6 py-16 text-center">
             <Check className="mx-auto h-8 w-8 text-primary" />

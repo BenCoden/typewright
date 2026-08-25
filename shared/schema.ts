@@ -13,7 +13,29 @@ import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
  */
 
 /** Block kinds. Only `prose`, `heading`, and `code` are typeable. */
-export type BlockKind = 'prose' | 'heading' | 'code' | 'image';
+export type BlockKind = 'prose' | 'heading' | 'code' | 'image' | 'embed';
+
+/**
+ * A link that appeared inside a block, with where it sat in the text.
+ *
+ * The offsets are into the block's final text, which is what lets the reader
+ * underline the exact words that were linked instead of listing bare URLs with
+ * no idea where they came from.
+ */
+export interface BlockLink {
+  text: string;
+  url: string;
+  start: number;
+  end: number;
+  /** True when the target is another page in the same documentation set. */
+  internal: boolean;
+}
+
+/** One link, plus where in the page it is, for the links side panel. */
+export interface PageLink extends BlockLink {
+  blockIdx: number;
+  section: string | null;
+}
 
 /**
  * A documentation set imported from the web: one TOC, many pages.
@@ -94,6 +116,10 @@ export const blocks = sqliteTable(
     assetId: integer('asset_id'),
     /** Annotation legend for a listing, or a figure credit. Displayed, not typed. */
     note: text('note'),
+    /** Links inside the text, as JSON `BlockLink[]`. Null for file-based books. */
+    linksJson: text('links_json'),
+    /** For embeds: the video or page URL to show. */
+    src: text('src'),
   },
   (t) => ({
     bookIdx: index('blocks_book_idx').on(t.bookId, t.idx),
@@ -213,6 +239,8 @@ export type Settings = typeof settings.$inferSelect;
 
 /** A block joined with its asset, as the typing view consumes it. */
 export interface BlockView extends Block {
+  /** Links found in this block's text, parsed from `linksJson`. */
+  links?: BlockLink[];
   asset: Asset | null;
 }
 

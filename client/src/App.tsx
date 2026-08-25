@@ -9,6 +9,7 @@ import LibraryPage from '@/pages/library';
 import TypingPage from '@/pages/typing';
 import StatsPage from '@/pages/stats';
 import SettingsPage from '@/pages/settings';
+import ShortcutsPage from '@/pages/shortcuts';
 import NotFound from '@/pages/not-found';
 
 /**
@@ -24,6 +25,7 @@ function Routes() {
       <Route path="/" component={LibraryPage} />
       <Route path="/type/:id" component={TypingPage} />
       <Route path="/stats" component={StatsPage} />
+      <Route path="/shortcuts" component={ShortcutsPage} />
       <Route path="/settings" component={SettingsPage} />
       <Route component={NotFound} />
     </Switch>

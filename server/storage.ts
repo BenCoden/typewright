@@ -7,9 +7,11 @@ import { assets, blocks, books, collections, sessions, settings } from '@shared/
 import type {
   Asset,
   Block,
+  BlockLink,
   BlockView,
   Book,
   Collection,
+  PageLink,
   TocEntry,
   Session,
   Settings,
@@ -83,7 +85,11 @@ sqlite.exec(`
     label    TEXT,
     lang     TEXT,
     asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL,
-    note     TEXT
+    note     TEXT,
+    -- Links found in the block text, as JSON. Empty for file-based books.
+    links_json TEXT,
+    -- For embeds: the page or player URL the block points at.
+    src TEXT
   );
   CREATE INDEX IF NOT EXISTS blocks_book_idx ON blocks (book_id, idx);
 
@@ -143,6 +149,8 @@ ensureColumn('books', 'adapter', 'adapter TEXT');
 ensureColumn('books', 'content_hash', 'content_hash TEXT');
 ensureColumn('books', 'fetched_at', 'fetched_at INTEGER');
 ensureColumn('books', 'toc_idx', 'toc_idx INTEGER');
+ensureColumn('blocks', 'links_json', 'links_json TEXT');
+ensureColumn('blocks', 'src', 'src TEXT');
 sqlite.exec('CREATE INDEX IF NOT EXISTS books_collection_idx ON books (collection_id)');
 sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS books_source_url_idx ON books (source_url) WHERE source_url IS NOT NULL');
 
@@ -194,6 +202,10 @@ export interface NewBlock {
   note?: string | null;
   /** Matches a NewAsset.key. */
   imageKey?: string;
+  /** Links found inside `text`, with offsets into it. */
+  links?: BlockLink[];
+  /** For embeds: the video or page URL to show. */
+  src?: string;
 }
 
 export interface NewBook {
@@ -232,6 +244,7 @@ export interface IStorage {
   updateBook(id: number, patch: { title?: string; author?: string }): Book | undefined;
   setPosition(id: number, idx: number): Book | undefined;
   getBlocks(bookId: number, from: number, count: number): BlockView[];
+  getPageLinks(bookId: number): PageLink[];
   /** Chapter/section outline for the jump-to menu. */
   getOutline(bookId: number): { idx: number; section: string; kind: string }[];
   getAsset(id: number): Asset | undefined;
@@ -247,6 +260,16 @@ export interface IStorage {
 
 const TYPEABLE = new Set(['prose', 'heading', 'code']);
 
+function parseLinks(json: string | null): BlockLink[] | undefined {
+  if (!json) return undefined;
+  try {
+    const parsed = JSON.parse(json) as BlockLink[];
+    return Array.isArray(parsed) && parsed.length ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function countBlocks(list: NewBlock[]) {
   const typeable = list.filter((b) => TYPEABLE.has(b.kind));
   return {
@@ -255,7 +278,8 @@ function countBlocks(list: NewBlock[]) {
     blockCount: list.length,
     typeableCount: typeable.length,
     codeBlockCount: list.filter((b) => b.kind === 'code').length,
-    imageCount: list.filter((b) => b.kind === 'image').length,
+    // "Media" on the card: figures and embedded players alike.
+    imageCount: list.filter((b) => b.kind === 'image' || b.kind === 'embed').length,
   };
 }
 
@@ -418,8 +442,8 @@ class SqliteStorage implements IStorage {
     }
 
     const blockStmt = sqlite.prepare(
-      `INSERT INTO blocks (book_id, idx, kind, text, section, label, lang, asset_id, note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO blocks (book_id, idx, kind, text, section, label, lang, asset_id, note, links_json, src)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     input.blocks.forEach((b, i) => {
       blockStmt.run(
@@ -431,7 +455,9 @@ class SqliteStorage implements IStorage {
         b.label ?? null,
         b.lang ?? null,
         b.imageKey ? assetIdByKey.get(b.imageKey) ?? null : null,
-        b.note ?? null
+        b.note ?? null,
+        b.links?.length ? JSON.stringify(b.links) : null,
+        b.src ?? null
       );
     });
 
@@ -495,7 +521,38 @@ class SqliteStorage implements IStorage {
       .limit(count)
       .all();
 
-    return rows.map((row) => ({ ...(row.block as Block), asset: row.asset ?? null }));
+    return rows.map((row) => ({
+      ...(row.block as Block),
+      asset: row.asset ?? null,
+      links: parseLinks(row.block.linksJson),
+    }));
+  }
+
+  /** Every link on a page, in reading order, for the links panel. */
+  getPageLinks(bookId: number): PageLink[] {
+    const rows = sqlite
+      .prepare(
+        `SELECT idx, section, links_json
+         FROM blocks
+         WHERE book_id = ? AND links_json IS NOT NULL
+         ORDER BY idx`
+      )
+      .all(bookId) as { idx: number; section: string | null; links_json: string }[];
+
+    const out: PageLink[] = [];
+    const seen = new Set<string>();
+
+    for (const row of rows) {
+      for (const link of parseLinks(row.links_json) ?? []) {
+        // The same destination is often linked several times on a page.
+        const key = `${link.url}|${link.text.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ ...link, blockIdx: row.idx, section: row.section });
+      }
+    }
+
+    return out;
   }
 
   /**

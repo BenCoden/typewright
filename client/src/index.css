@@ -348,6 +348,19 @@
     white-space: pre-wrap;
   }
 
+  /*
+   * No ligatures anywhere text is typed. A monospace font that draws "=>" as a
+   * single arrow hides the fact that two keys are expected, which is exactly the
+   * wrong thing to do in a typing trainer.
+   */
+  .tw-code-surface,
+  .tw-code-surface pre,
+  .tw-code-surface code,
+  .font-mono {
+    font-variant-ligatures: none;
+    font-feature-settings: 'liga' 0, 'clig' 0, 'calt' 0;
+  }
+
   .tw-char-pending {
     color: hsl(var(--type-pending));
   }
@@ -360,6 +373,18 @@
     color: hsl(var(--destructive-foreground));
     background-color: hsl(var(--wrong-bg) / 0.9);
     border-radius: 2px;
+  }
+
+  /*
+   * Words that were links on the original page. Marked, never coloured — the
+   * typing status has to stay readable, so this is a dotted rule underneath
+   * that shows where the page pointed somewhere else.
+   */
+  .tw-linked {
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-decoration-color: hsl(var(--primary) / 0.55);
+    text-underline-offset: 3px;
   }
 
   /* Whitespace that auto-indent filled in for you. */

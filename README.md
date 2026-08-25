@@ -68,6 +68,12 @@ Typewright picks a route per site, best first:
 
 Microsoft Learn is worth calling out: the page you see in a browser is a JavaScript shell with no code in it at all. Typewright reads the Markdown source instead, which is why C# listings come through with their indentation intact.
 
+### Media and links
+
+Figures, screenshots, and embedded video come across with the page. A YouTube or Vimeo embed becomes a player you can watch in place; it is shown, never typed, the same as a figure.
+
+Links are kept rather than flattened. The words that carried a link are underlined with a dotted rule where they appear in the text, and `Ctrl+L` opens a side panel listing every destination with the block it came from — click a row to jump back to that paragraph. Links that lead to another page in the same table of contents get a **Type this page** button, so following a reference is the same gesture as opening any other page.
+
 ### Navigating a doc set
 
 | Keys | Action |
@@ -76,12 +82,15 @@ Microsoft Learn is worth calling out: the page you see in a browser is a JavaScr
 | `Ctrl` `.` | Next page |
 | `Ctrl` `,` | Previous page |
 | `Ctrl` `O` | Contents panel — the doc set on one tab, this page's headings on the other |
+| `Ctrl` `L` | Links on this page, and which block each came from |
 
 A tick marks pages already in your library. The rest are one keystroke and one fetch away.
 
 ### Checking for updates
 
-Documentation changes. The refresh button on a page's card in the library re-fetches it and compares content; if nothing changed upstream it says so and leaves your progress alone. If the page did change it is rebuilt, which resets progress on that page.
+Documentation changes. The refresh button on a page's card in the library re-fetches it and compares content; if nothing changed it says so and leaves your progress alone. If it did change the page is rebuilt, which resets progress on that page.
+
+The comparison is against the text Typewright extracted, not the raw HTML, so an improvement to the importer also counts as a change. That means a page imported by an older version can be brought up to date without deleting it.
 
 ### Pages that need JavaScript
 
@@ -104,7 +113,9 @@ Without it, such a page fails with a message saying so rather than importing som
 
 ### Shortcuts
 
-Typing consumes every printable key, so commands sit on modifiers. `Ctrl+/` shows this list in-session.
+Typing consumes every printable key, so commands sit on modifiers. `Ctrl+/` shows this list in-session, and the **Shortcuts** page in the nav has the same list with a search box.
+
+Ligatures are switched off everywhere text is typed. A monospace font that draws `=>` as a single arrow hides the fact that two keystrokes are expected.
 
 | Shortcut | Does |
 | --- | --- |
@@ -117,6 +128,7 @@ Typing consumes every printable key, so commands sit on modifiers. `Ctrl+/` show
 | `Ctrl+Shift+→` / `Ctrl+Shift+←` | Jump between section headings |
 | `Ctrl+Backspace` | Start this block over |
 | `Ctrl+O` | Contents panel |
+| `Ctrl+L` | Links on this page |
 | `Ctrl+;` | Jump to any page in the table of contents |
 | `Ctrl+.` / `Ctrl+,` | Next or previous page in a documentation set |
 
@@ -191,6 +203,7 @@ Long books stay responsive because the typing view only ever holds a 60-block wi
 | `POST` | `/api/import/url` | Import a documentation or wiki page, or return the copy already held |
 | `POST` | `/api/books/:id/refresh` | Re-fetch a web page and report whether it changed |
 | `GET` | `/api/books/:id/context` | Table of contents, position in it, previous and next pages |
+| `GET` | `/api/books/:id/links` | Links on a page, with the block each appeared in |
 | `GET` | `/api/collections` | Doc sets and how much of each is imported |
 | `GET` | `/api/renderer` | Whether the optional Chromium sidecar is configured and answering |
 | `GET` | `/api/library` | Files in the watched folder |

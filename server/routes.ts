@@ -52,6 +52,8 @@ function buildPayload(parsed: ParsedBook, sourceName: string, web?: NewBook['web
       lang: b.lang ?? null,
       note: b.note ?? null,
       imageKey: b.imageKey,
+      links: b.links,
+      src: b.src,
     })),
     assets: [...parsed.images.entries()]
       .filter(([key]) => usedKeys.has(key))
@@ -121,14 +123,16 @@ function persistWebPage(page: WebPage): {
 }
 
 /** TOC hrefs and page URLs differ by trailing slashes and index documents. */
+function tocKey(url: string): string {
+  return url
+    .replace(/[#?].*$/, '')
+    .replace(/\/(index|default)\.\w+$/, '/')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
 function sameUrl(a: string, b: string): boolean {
-  const key = (url: string) =>
-    url
-      .replace(/[#?].*$/, '')
-      .replace(/\/(index|default)\.\w+$/, '/')
-      .replace(/\/+$/, '')
-      .toLowerCase();
-  return key(a) === key(b);
+  return tocKey(a) === tocKey(b);
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -400,6 +404,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       imported,
     };
     res.json(context);
+  });
+
+  /**
+   * Every link on a page, with the block it appeared in.
+   *
+   * Links that point at a page in the same table of contents are flagged, since
+   * those can be opened as typing practice rather than just visited.
+   */
+  app.get('/api/books/:id/links', (req, res) => {
+    const id = idParam.safeParse(req.params.id);
+    if (!id.success) return fail(res, 400, 'Invalid book id.');
+
+    const book = storage.getBook(id.data);
+    if (!book) return fail(res, 404, 'Page not found.');
+
+    const links = storage.getPageLinks(book.id);
+
+    // Which of them are pages in this doc set, and which are already imported.
+    const inToc = new Set<string>();
+    const imported: Record<string, number> = {};
+
+    if (book.collectionId) {
+      const collection = storage.getCollection(book.collectionId);
+      for (const entry of (JSON.parse(collection?.tocJson ?? '[]') as TocEntry[])) {
+        if (entry.url) inToc.add(tocKey(entry.url));
+      }
+      for (const page of storage.listCollectionBooks(book.collectionId)) {
+        if (page.sourceUrl) imported[tocKey(page.sourceUrl)] = page.id;
+      }
+    }
+
+    res.json(
+      links.map((link) => ({
+        ...link,
+        inToc: inToc.has(tocKey(link.url)),
+        bookId: imported[tocKey(link.url)] ?? null,
+      }))
+    );
   });
 
   app.get('/api/renderer', async (_req, res) => {

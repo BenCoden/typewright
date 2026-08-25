@@ -1,7 +1,15 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { parse as parseHtml, type HTMLElement } from 'node-html-parser';
-import { detectLang, htmlToBlocks, imageSize, normalizeCode } from './import';
+import {
+  LINK_OPEN,
+  detectLang,
+  htmlToBlocks,
+  imageSize,
+  markLink,
+  normalizeCode,
+  stripLinkMarkers,
+} from './import';
 import type { ExtractedImage, ParsedBook, RawBlock } from './import';
 import type { TocEntry } from '@shared/schema';
 
@@ -106,6 +114,8 @@ interface MarkdownContext {
   resolve: (relative: string) => string | null;
   images: Map<string, ExtractedImage>;
   notes: string[];
+  /** The published page URL, used to turn source-relative links into site links. */
+  pageUrl: string;
 }
 
 /** Pulls `#region NAME ... #endregion` out of a snippet file. */
@@ -248,7 +258,7 @@ async function markdownToBlocks(markdown: string, ctx: MarkdownContext): Promise
   let paragraph: string[] = [];
 
   const flushParagraph = () => {
-    const joined = inlineMarkdown(paragraph.join(' ')).replace(/\s+/g, ' ').trim();
+    const joined = inlineMarkdown(paragraph.join(' '), ctx.pageUrl).replace(/\s+/g, ' ').trim();
     if (joined) out.push({ kind: 'prose', text: joined, section });
     paragraph = [];
   };
@@ -303,9 +313,9 @@ async function markdownToBlocks(markdown: string, ctx: MarkdownContext): Promise
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
       flushParagraph();
-      const title = inlineMarkdown(heading[2]).trim();
+      const title = inlineMarkdown(heading[2], ctx.pageUrl).trim();
       if (title) {
-        if (heading[1].length <= 3) section = title;
+        if (heading[1].length <= 3) section = stripLinkMarkers(title);
         out.push({ kind: 'heading', text: title, section });
       }
       continue;
@@ -377,7 +387,41 @@ async function markdownToBlocks(markdown: string, ctx: MarkdownContext): Promise
 const HTML_TAG =
   /<\/?(?:a|b|i|em|strong|span|br|code|kbd|sub|sup|small|img|div|p|ul|ol|li|table|thead|tbody|tr|td|th|nobr|font|center|h[1-6])(?:\s[^>]*)?\/?>/gi;
 
-function inlineMarkdown(text: string): string {
+/**
+ * Turns a Markdown href into the page a reader would land on.
+ *
+ * Docs repositories link between source files — `../../linq/index.md` — which
+ * only means something once it is mapped back onto the published site.
+ */
+function resolveDocLink(href: string, pageUrl: string): string | null {
+  if (/^(mailto|tel|javascript):/i.test(href)) return null;
+
+  try {
+    const url = new URL(href, pageUrl);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+
+    if (/(^|\.)learn\.microsoft\.com$/i.test(url.hostname)) {
+      // Source paths end in .md and index files are served as a directory.
+      url.pathname = url.pathname
+        .replace(/\/index\.md$/i, '/')
+        .replace(/\.md$/i, '')
+        .replace(/\/toc\.yml$/i, '/');
+
+      // Site-absolute links such as /ef/ are missing the locale segment.
+      const locale = new URL(pageUrl).pathname.match(/^\/([a-z]{2}-[a-z]{2})\//i)?.[1];
+      if (locale && !new RegExp(`^/${locale}/`, 'i').test(url.pathname)) {
+        url.pathname = `/${locale}${url.pathname}`;
+      }
+    }
+
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Marks `[text](href)` links in place while the rest of the inline syntax is removed. */
+function inlineMarkdown(text: string, pageUrl?: string): string {
   /*
    * Inline code is pulled out before anything else touches the string.
    * `Task<T>` and `List<int>` look exactly like HTML tags, and stripping them
@@ -391,7 +435,14 @@ function inlineMarkdown(text: string): string {
 
   const cleaned = withPlaceholders
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\(([^)\s]*)[^)]*\)/g, (_m, label: string, href: string) => {
+      if (!pageUrl || href.startsWith('#')) return label;
+
+      const url = resolveDocLink(href, pageUrl);
+      if (!url) return label;
+
+      return markLink(url, new URL(url).hostname === new URL(pageUrl).hostname, label);
+    })
     .replace(/<xref:([^>]+)>/g, (_m, uid: string) => renderXref(uid))
     .replace(/\*\*\*([^*]+)\*\*\*/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
@@ -526,8 +577,8 @@ function renderXref(uid: string): string {
 
   const path = rawPath
     .replace(/(%2A|\*)$/i, '') // overload marker
-    // Generic arity: Task%601 -> Task<T>, Dictionary%602 -> Dictionary<T1, T2>.
-    .replace(/%60(\d+)/gi, (_m, arity: string) => {
+    // Generic arity, encoded or literal: Task%601 and Task`1 both -> Task<T>.
+    .replace(/(?:%60|`)(\d+)/gi, (_m, arity: string) => {
       const count = Number(arity);
       const params = count === 1 ? 'T' : Array.from({ length: count }, (_v, i) => `T${i + 1}`).join(', ');
       return `<${params}>`;
@@ -552,25 +603,59 @@ function renderXref(uid: string): string {
 
 /** Falls back to the page's own nav when there is no TOC feed. */
 function tocFromNav(root: HTMLElement, pageUrl: string): TocEntry[] {
-  const nav =
-    root.querySelector('nav[aria-label*="ontents" i]') ??
-    root.querySelector('[data-toc-container]') ??
-    root.querySelector('nav.toc') ??
-    root.querySelector('#toc') ??
-    root.querySelector('nav');
-  if (!nav) return [];
+  /*
+   * Documentation sites have several navs — a top bar, breadcrumbs, prev/next
+   * links, and the sidebar that actually lists the doc set. Taking the first
+   * one finds the top bar every time, so every candidate is read and the one
+   * with the most links into this part of the site wins.
+   */
+  const candidates = [
+    ...root.querySelectorAll('nav[aria-label*="sidebar" i]'),
+    ...root.querySelectorAll('nav[aria-label*="ontents" i]'),
+    ...root.querySelectorAll('[data-toc-container]'),
+    ...root.querySelectorAll('.theme-doc-sidebar-menu'), // Docusaurus
+    ...root.querySelectorAll('.md-nav--primary'), // MkDocs Material
+    ...root.querySelectorAll('.wy-menu-vertical'), // Read the Docs
+    ...root.querySelectorAll('.bd-sidebar'), // PyData / Sphinx book
+    ...root.querySelectorAll('[class*="sidebar" i]'),
+    ...root.querySelectorAll('[class*="toc" i]'),
+    ...root.querySelectorAll('nav'),
+    ...root.querySelectorAll('aside'),
+  ];
 
+  let best: TocEntry[] = [];
+  for (const candidate of candidates) {
+    const entries = tocFromContainer(candidate, pageUrl);
+    if (entries.length > best.length) best = entries;
+  }
+
+  return best;
+}
+
+/** Reads one container as a table of contents, or rejects it. */
+function tocFromContainer(nav: HTMLElement, pageUrl: string): TocEntry[] {
   const out: TocEntry[] = [];
   const seen = new Set<string>();
 
   for (const anchor of nav.querySelectorAll('a')) {
-    const title = anchor.textContent.replace(/\s+/g, ' ').trim();
+    const title = (
+      anchor.textContent ||
+      anchor.getAttribute('title') ||
+      anchor.getAttribute('aria-label') ||
+      ''
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
     const href = anchor.getAttribute('href');
-    if (!title || !href) continue;
+    if (!title) continue;
 
-    const url = absolutise(href, pageUrl);
-    if (!url || seen.has(url)) continue;
-    seen.add(url);
+    // Collapsible sidebars label their groups with an anchor that has no href.
+    const url = href ? absolutise(href, pageUrl) : null;
+    if (href && !url) continue;
+    if (url) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+    }
 
     // Nesting depth from how deeply the anchor sits inside lists.
     let depth = 0;
@@ -600,7 +685,6 @@ const CHROME_SELECTORS = [
   'noscript',
   'form',
   'button',
-  'iframe',
   'svg',
   '[role="navigation"]',
   '[role="banner"]',
@@ -624,11 +708,40 @@ const CHROME_SELECTORS = [
   '.copy-button',
   '.visually-hidden',
   '.sr-only',
+  '[class*="tableOfContents" i]',
+  '.theme-doc-toc-desktop',
+  '.theme-doc-toc-mobile',
+  '.theme-doc-breadcrumbs',
+  '.pagination-nav',
+  '[class*="sidebar" i]',
+  '[class*="breadcrumb" i]',
+  '.hash-link',
+  '.anchor-link',
+  '[class*="skipToContent" i]',
 ];
+
+/**
+ * Repairs unquoted attribute values that end in a slash.
+ *
+ * Minified HTML writes `href=/docs/welcome/releases/>` — legal, but the closing
+ * `/>` reads as a self-closing tag, which empties the element and throws its
+ * label out as a sibling. Docusaurus sites are built this way, and it is why
+ * their sidebars look like a list of untitled links.
+ */
+function repairUnquotedAttributes(html: string): string {
+  return html.replace(/(\s[a-zA-Z][\w:-]*=)([^\s"'<>]*\/)>/g, '$1"$2">');
+}
+
+/** Parses a fetched page, working around minified-HTML quirks. */
+function parseDocument(html: string) {
+  return parseHtml(repairUnquotedAttributes(html), {
+    blockTextElements: { script: false, style: false, pre: true },
+  });
+}
 
 /** Picks the element most likely to hold the article, then strips its chrome. */
 function readableContent(html: string): { element: HTMLElement; title: string } | null {
-  const root = parseHtml(html, { blockTextElements: { script: false, style: false, pre: true } });
+  const root = parseDocument(html);
 
   const candidates = [
     root.querySelector('main article'),
@@ -665,6 +778,38 @@ function readableContent(html: string): { element: HTMLElement; title: string } 
   return { element: best, title };
 }
 
+/**
+ * Picks the best URL for an image element.
+ *
+ * Documentation sites lazy-load figures, so the useful URL is often in
+ * `data-src` or the largest entry of a `srcset` rather than in `src`.
+ */
+function imageSource(img: HTMLElement): string | null {
+  const direct = img.getAttribute('src');
+  if (direct && !/^data:image\/(gif|svg)/i.test(direct)) return direct;
+
+  const lazy =
+    img.getAttribute('data-src') ??
+    img.getAttribute('data-original') ??
+    img.getAttribute('data-lazy-src');
+  if (lazy) return lazy;
+
+  const srcset =
+    img.getAttribute('srcset') ??
+    (img.parentNode as HTMLElement | null)?.querySelector?.('source')?.getAttribute('srcset');
+  if (srcset) {
+    // "a.png 1x, b.png 2x" or "a.png 480w, b.png 1024w" — take the widest.
+    const best = srcset
+      .split(',')
+      .map((part) => part.trim().split(/\s+/))
+      .map(([url, size]) => ({ url, weight: Number((size ?? '').replace(/[wx]$/, '')) || 1 }))
+      .sort((a, b) => b.weight - a.weight)[0];
+    if (best?.url) return best.url;
+  }
+
+  return direct ?? null;
+}
+
 async function blocksFromHtmlElement(
   element: HTMLElement,
   pageUrl: string,
@@ -673,18 +818,27 @@ async function blocksFromHtmlElement(
   // Download every referenced image first, so the walker can resolve them.
   const keyBySrc = new Map<string, string>();
   for (const img of element.querySelectorAll('img')) {
-    const src = img.getAttribute('src');
-    if (!src) continue;
+    const reference = imageSource(img);
+    if (!reference) continue;
+
+    // Rewrite the element so the walker and the download agree on the key.
+    img.setAttribute('src', reference);
+
     try {
-      const absolute = new URL(src, pageUrl).toString();
+      const absolute = new URL(reference, pageUrl).toString();
       const key = await downloadImage(absolute, ctx);
-      if (key) keyBySrc.set(src, key);
+      if (key) keyBySrc.set(reference, key);
     } catch {
       // skip unusable src
     }
   }
 
-  const { blocks } = htmlToBlocks(element.outerHTML, null, (src) => keyBySrc.get(src) ?? null);
+  const { blocks } = htmlToBlocks(
+    element.outerHTML,
+    null,
+    (src) => keyBySrc.get(src) ?? null,
+    pageUrl
+  );
   return { blocks };
 }
 
@@ -706,6 +860,18 @@ function collectionTitle(html: string, url: string, toc: TocEntry[]): string {
   return trimmed || siteName(url);
 }
 
+/**
+ * Fingerprints a page from the blocks that were extracted from it, not from its
+ * raw HTML. That way "check for updates" also picks up an improvement to the
+ * extractor, instead of reporting no change because the source is byte-identical
+ * while the reading experience would be different.
+ */
+function blockHash(blocks: RawBlock[]): string {
+  return hash(
+    blocks.map((b) => `${b.kind}\u0000${b.src ?? ''}\u0000${b.label ?? ''}\u0000${b.text}`).join('\u0001')
+  );
+}
+
 export async function importUrl(rawUrl: string): Promise<WebPage> {
   const sourceUrl = normalizeUrl(rawUrl);
   const site = siteName(sourceUrl);
@@ -724,7 +890,7 @@ export async function importUrl(rawUrl: string): Promise<WebPage> {
   const rawUrlForMarkdown = gitUrl ? toRawGitHub(gitUrl) : null;
 
   const feedToc = await fetchLearnToc(sourceUrl, html);
-  const toc = feedToc.length ? feedToc : tocFromNav(parseHtml(html), sourceUrl);
+  const toc = feedToc.length ? feedToc : tocFromNav(parseDocument(html), sourceUrl);
 
   if (rawUrlForMarkdown) {
     try {
@@ -734,6 +900,7 @@ export async function importUrl(rawUrl: string): Promise<WebPage> {
       const ctx: MarkdownContext = {
         images,
         notes,
+        pageUrl: sourceUrl,
         resolve: (relative) => {
           try {
             return new URL(relative, base).toString();
@@ -760,7 +927,7 @@ export async function importUrl(rawUrl: string): Promise<WebPage> {
           sourceUrl,
           upstreamUrl: rawUrlForMarkdown,
           adapter: 'git-markdown',
-          contentHash: hash(markdown),
+          contentHash: blockHash(blocks),
           collection: {
             title: collectionTitle(html, sourceUrl, toc),
             site,
@@ -802,6 +969,7 @@ export async function importUrl(rawUrl: string): Promise<WebPage> {
   const ctx: MarkdownContext = {
     images,
     notes,
+    pageUrl: sourceUrl,
     resolve: (relative) => {
       try {
         return new URL(relative, sourceUrl).toString();
@@ -824,7 +992,7 @@ export async function importUrl(rawUrl: string): Promise<WebPage> {
     sourceUrl,
     upstreamUrl: null,
     adapter,
-    contentHash: hash(content.element.textContent),
+    contentHash: blockHash(blocks),
     collection: {
       title: collectionTitle(html, sourceUrl, toc),
       site,
@@ -883,6 +1051,7 @@ async function tryWiki(
     const ctx: MarkdownContext = {
       images,
       notes,
+      pageUrl: sourceUrl,
       resolve: (relative) => {
         try {
           return new URL(relative, sourceUrl).toString();
@@ -906,7 +1075,7 @@ async function tryWiki(
       sourceUrl,
       upstreamUrl: apiUrl,
       adapter: 'wiki',
-      contentHash: hash(articleHtml),
+      contentHash: blockHash(blocks),
       collection: {
         title: site,
         site,
