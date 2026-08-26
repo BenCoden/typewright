@@ -867,6 +867,48 @@ class SqliteStorage implements IStorage {
         .all() as any[]
     ).map(normalizeSessionRow);
 
+    /*
+     * Per-book rollup. A book practised across many short sittings should read
+     * as one line of progress, so speed is recomputed from the summed
+     * characters and time rather than averaging the per-session WPM values,
+     * which would over-weight brief sessions.
+     */
+    const byBook = (
+      sqlite
+        .prepare(
+          `SELECT s.book_id                     AS bookId,
+                  b.title                       AS bookTitle,
+                  COUNT(*)                      AS sessions,
+                  SUM(s.correct_chars)          AS correct,
+                  SUM(s.duration_ms)            AS ms,
+                  SUM(s.keystrokes)             AS keystrokes,
+                  SUM(s.scored_chars)           AS scored,
+                  SUM(s.errors)                 AS errors,
+                  MAX(s.wpm)                    AS bestWpm,
+                  MAX(s.ended_at)               AS lastAt
+           FROM sessions s
+           JOIN books b ON b.id = s.book_id
+           GROUP BY s.book_id, b.title
+           ORDER BY lastAt DESC`
+        )
+        .all() as Record<string, number | string>[]
+    ).map((row) => {
+      // Older rows predate scored_chars; fall back to keystrokes for them.
+      const scored = Number(row.scored) || Number(row.keystrokes) || 0;
+      const errors = Number(row.errors);
+      return {
+        bookId: Number(row.bookId),
+        bookTitle: String(row.bookTitle),
+        sessions: Number(row.sessions),
+        wpm: wpmOf(Number(row.correct), Number(row.ms)),
+        bestWpm: Number(row.bestWpm),
+        accuracyBp:
+          scored > 0 ? Math.round((Math.max(0, scored - errors) / scored) * 10000) : 0,
+        minutes: Math.max(1, Math.round(Number(row.ms) / 60000)),
+        lastAt: Number(row.lastAt),
+      };
+    });
+
     const tally = new Map<string, number>();
     for (const row of sqlite.prepare('SELECT errors_by_key FROM sessions').all() as {
       errors_by_key: string;
@@ -902,6 +944,7 @@ class SqliteStorage implements IStorage {
       },
       daily,
       recent,
+      byBook,
       worstKeys: [...tally.entries()]
         .map(([key, count]) => ({ key, count }))
         .sort((a, b) => b.count - a.count)

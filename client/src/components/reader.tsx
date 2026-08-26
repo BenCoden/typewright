@@ -618,7 +618,13 @@ export const ReaderBlock = memo(function ReaderBlock(props: BlockProps) {
   return (
     <>
       {body}
-      {props.summary && props.mode === 'typed' ? <BlockChip summary={props.summary} /> : null}
+      {/*
+        A summary only exists once the block has been completed, so it is shown
+        for the block still under the cursor as well as for finished blocks
+        above it. That way the reader sees how they did the instant they land
+        the last character, rather than only after advancing.
+      */}
+      {props.summary && props.mode !== 'ahead' ? <BlockChip summary={props.summary} /> : null}
       {props.mode === 'skipped' ? <SkippedChip /> : null}
     </>
   );

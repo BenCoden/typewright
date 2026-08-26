@@ -33,7 +33,7 @@ export default function StatsPage() {
     );
   }
 
-  const { totals, daily, recent, worstKeys, streak } = data;
+  const { totals, daily, byBook, worstKeys, streak } = data;
   const chartData = daily.map((d) => ({
     day: d.day.slice(5),
     wpm: d.wpm,
@@ -147,34 +147,49 @@ export default function StatsPage() {
 
       <section>
         <h2 className="mb-4 text-sm font-medium uppercase tracking-wide text-muted-foreground">
-          Recent sessions
+          By book
         </h2>
-        <div className="overflow-hidden rounded-lg border border-card-border">
-          <table className="w-full text-sm">
+        <div className="overflow-x-auto rounded-lg border border-card-border">
+          <table className="w-full min-w-0 text-sm">
             <thead className="bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
-                <th className="px-4 py-2 text-left font-medium">Book</th>
-                <th className="px-4 py-2 text-right font-medium">WPM</th>
-                <th className="px-4 py-2 text-right font-medium">Accuracy</th>
+                <th className="px-3 py-2 text-left font-medium sm:px-4">Book</th>
+                <th className="px-3 py-2 text-right font-medium sm:px-4">WPM</th>
+                <th className="hidden px-4 py-2 text-right font-medium sm:table-cell">Best</th>
+                <th className="px-3 py-2 text-right font-medium sm:px-4">Accuracy</th>
                 <th className="hidden px-4 py-2 text-right font-medium sm:table-cell">Minutes</th>
-                <th className="hidden px-4 py-2 text-right font-medium sm:table-cell">When</th>
+                <th className="hidden px-4 py-2 text-right font-medium md:table-cell">Sessions</th>
+                <th className="hidden px-4 py-2 text-right font-medium sm:table-cell">Last</th>
               </tr>
             </thead>
             <tbody>
-              {recent.map((session) => (
-                <tr key={session.id} className="border-t border-border bg-card">
-                  <td className="max-w-[16rem] truncate px-4 py-2 text-foreground">
-                    {session.bookTitle}
+              {byBook.length === 0 && (
+                <tr className="border-t border-border bg-card">
+                  <td colSpan={7} className="px-4 py-6 text-center text-muted-foreground">
+                    Nothing typed yet. Open a book to start.
                   </td>
-                  <td className="px-4 py-2 text-right font-mono tabular-nums">{session.wpm}</td>
-                  <td className="px-4 py-2 text-right font-mono tabular-nums">
-                    {(session.accuracyBp / 100).toFixed(1)}%
+                </tr>
+              )}
+              {byBook.map((book) => (
+                <tr key={book.bookId} className="border-t border-border bg-card">
+                  <td className="max-w-[8.5rem] truncate px-3 py-2 text-foreground sm:max-w-[16rem] sm:px-4">
+                    {book.bookTitle}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums sm:px-4">{book.wpm}</td>
+                  <td className="hidden px-4 py-2 text-right font-mono tabular-nums text-muted-foreground sm:table-cell">
+                    {book.bestWpm}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums sm:px-4">
+                    {(book.accuracyBp / 100).toFixed(1)}%
                   </td>
                   <td className="hidden px-4 py-2 text-right font-mono tabular-nums sm:table-cell">
-                    {Math.max(1, Math.round(session.durationMs / 60000))}
+                    {book.minutes}
+                  </td>
+                  <td className="hidden px-4 py-2 text-right font-mono tabular-nums text-muted-foreground md:table-cell">
+                    {book.sessions}
                   </td>
                   <td className="hidden px-4 py-2 text-right text-muted-foreground sm:table-cell">
-                    {new Date(session.endedAt).toLocaleDateString(undefined, {
+                    {new Date(book.lastAt).toLocaleDateString(undefined, {
                       month: 'short',
                       day: 'numeric',
                     })}

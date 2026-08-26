@@ -116,14 +116,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-sm">
-        <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-4 sm:px-6">
+        <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-4 sm:gap-6 sm:px-6">
           <Link
             href="/"
             className="flex items-center gap-2 text-foreground"
             data-testid="link-home"
           >
-            <Logo className="h-5 w-5 text-primary" />
-            <span className="font-serif text-lg font-semibold tracking-tight">Typewright</span>
+            <Logo className="h-5 w-5 shrink-0 text-primary" />
+            <span className="hidden font-serif text-lg font-semibold tracking-tight sm:inline">
+              Typewright
+            </span>
           </Link>
 
           <nav className="flex items-center gap-1">
@@ -134,20 +136,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   key={href}
                   href={href}
                   className={cn(
-                    'flex items-center gap-2 rounded-md px-3 py-1.5 text-sm hover-elevate active-elevate-2',
+                    'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover-elevate active-elevate-2 sm:px-3',
                     active ? 'bg-secondary text-foreground' : 'text-muted-foreground'
                   )}
                   data-testid={`link-nav-${label.toLowerCase()}`}
                 >
-                  <Icon className="h-4 w-4" />
-                  <span className="hidden sm:inline">{label}</span>
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="hidden md:inline">{label}</span>
                 </Link>
               );
             })}
           </nav>
 
           <div className="ml-auto flex items-center gap-2">
-            <span className="hidden text-xs text-muted-foreground md:inline">
+            {/* Only shown once the nav has room to spare for it. */}
+            <span className="hidden text-xs text-muted-foreground lg:inline">
               Local only — nothing leaves this machine
             </span>
             <ThemeToggle />

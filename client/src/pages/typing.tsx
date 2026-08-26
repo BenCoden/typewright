@@ -48,6 +48,9 @@ import {
 } from '@/lib/typing';
 import type { BlockView, Book } from '@shared/schema';
 
+/** Server-side per-block progress row, as the stats/progress API returns it. */
+type BlockProgressRow = import('@shared/schema').BlockProgress;
+
 /** Result of one typed block, shown as a small chip under the block. */
 export interface BlockSummary {
   wpm: number;
@@ -137,7 +140,7 @@ export default function TypingPage() {
    * writes back on every completion or skip so a page refresh or a book
    * switch keeps the chips and colours intact.
    */
-  const { data: serverProgress } = useQuery<import('@shared/schema').BlockProgress[]>({
+  const { data: serverProgress } = useQuery<BlockProgressRow[]>({
     queryKey: ['/api/books', bookId, 'progress'],
     enabled: Number.isFinite(bookId),
   });
@@ -287,7 +290,7 @@ export default function TypingPage() {
       return;
     }
     setState(createBlockState(currentBlock.text, options));
-    blockBaselineRef.current = { ...metricsRef.current };
+    blockMetricsRef.current = emptyMetrics();
   }, [currentBlock?.id, typing, options]);
 
   /* ---------------------------------------------------------------- *
@@ -299,11 +302,16 @@ export default function TypingPage() {
   const savingRef = useRef(false);
 
   /**
-   * Metrics captured at the start of the current block, so per-block WPM and
-   * accuracy can be computed by subtracting them from the running totals.
-   * Reset whenever the block changes.
+   * Metrics for the current block only, accumulated independently of the
+   * session totals.
+   *
+   * This must not be derived by subtracting a baseline from `metricsRef`,
+   * because `flushSession` zeroes the session totals whenever the reader
+   * pauses, switches tabs, or leaves the page. A baseline captured before that
+   * reset would be larger than the totals that follow it, making the delta
+   * negative and silently discarding the block's result.
    */
-  const blockBaselineRef = useRef<Metrics>(emptyMetrics());
+  const blockMetricsRef = useRef<Metrics>(emptyMetrics());
 
   /**
    * Results of every block that was actually typed, keyed by block idx.
@@ -332,16 +340,20 @@ export default function TypingPage() {
       const next = { ...prior };
       let changed = false;
       for (const row of serverProgress) {
-        if (row.status === 'typed' && !next[row.blockIdx] && row.wpm !== null && row.accuracyBp !== null) {
-          next[row.blockIdx] = {
-            wpm: row.wpm,
-            accuracy: Math.round(row.accuracyBp / 100),
-            durationMs: row.durationMs ?? 0,
-            keystrokes: row.keystrokes ?? 0,
-            errors: row.errors ?? 0,
-          };
-          changed = true;
-        }
+        if (row.status !== 'typed' || row.wpm === null || row.accuracyBp === null) continue;
+        // Basis points carry one decimal of accuracy; keep it so a rehydrated
+        // chip reads identically to the one shown when the block was finished.
+        const accuracyPct = Math.round(row.accuracyBp / 10) / 10;
+        const existing = next[row.blockIdx];
+        if (existing && existing.wpm === row.wpm && existing.accuracy === accuracyPct) continue;
+        next[row.blockIdx] = {
+          wpm: row.wpm,
+          accuracy: accuracyPct,
+          durationMs: row.durationMs ?? 0,
+          keystrokes: row.keystrokes ?? 0,
+          errors: row.errors ?? 0,
+        };
+        changed = true;
       }
       return changed ? next : prior;
     });
@@ -374,17 +386,44 @@ export default function TypingPage() {
       errors?: number;
     }) => {
       if (!Number.isFinite(bookId)) return;
-      void apiRequest('POST', `/api/books/${bookId}/progress`, {
+      /*
+       * Every numeric field is rounded before it leaves the client. Timings come
+       * from `performance.now()` deltas and are therefore fractional, which the
+       * server's integer schema rejects outright.
+       */
+      const int = (value: number | undefined) =>
+        value === undefined || !Number.isFinite(value) ? null : Math.max(0, Math.round(value));
+
+      const body = {
         blockIdx: payload.blockIdx,
         status: payload.status,
-        wpm: payload.wpm ?? null,
-        accuracyBp: payload.accuracyBp ?? null,
-        durationMs: payload.durationMs ?? null,
-        keystrokes: payload.keystrokes ?? null,
-        errors: payload.errors ?? null,
-      }).catch(() => {
-        /* server persistence is opportunistic; the reader keeps typing */
-      });
+        wpm: int(payload.wpm),
+        accuracyBp: int(payload.accuracyBp),
+        durationMs: int(payload.durationMs),
+        keystrokes: int(payload.keystrokes),
+        errors: int(payload.errors),
+      };
+
+      void apiRequest('POST', `/api/books/${bookId}/progress`, body)
+        .then(() => {
+          /*
+           * Queries are cached indefinitely, so the cached progress response
+           * has to be updated in place. Without this the next visit to the
+           * book rehydrates from a response recorded before this block was
+           * finished, and the chip shows an older result than the one the
+           * reader just earned.
+           */
+          queryClient.setQueryData<BlockProgressRow[]>(
+            ['/api/books', bookId, 'progress'],
+            (prior) => {
+              const rest = (prior ?? []).filter((row) => row.blockIdx !== body.blockIdx);
+              return [...rest, { ...body, bookId, updatedAt: Date.now() }];
+            }
+          );
+        })
+        .catch(() => {
+          /* server persistence is opportunistic; the reader keeps typing */
+        });
     },
     [bookId]
   );
@@ -830,6 +869,14 @@ export default function TypingPage() {
           gap,
           autoPauseMs
         );
+        // Same keystroke, tracked per block so a session flush cannot erase it.
+        blockMetricsRef.current = recordKey(
+          blockMetricsRef.current,
+          outcome,
+          kindRef.current,
+          gap,
+          autoPauseMs
+        );
 
         if (outcome.completed) {
           metricsRef.current = {
@@ -838,18 +885,16 @@ export default function TypingPage() {
           };
 
           /*
-           * Take the delta between the block's baseline and the running totals
-           * to describe how the reader just did on this block alone. Accuracy
-           * is scored over characters resolved, not keys pressed, so a letter
-           * that took several tries costs exactly one bad mark.
+           * The block's own totals describe how the reader just did on it.
+           * Accuracy is scored over characters resolved, not keys pressed, so
+           * a letter that took several tries costs exactly one bad mark.
            */
-          const baseline = blockBaselineRef.current;
-          const totals = metricsRef.current;
-          const durationMs = Math.max(0, totals.activeMs - baseline.activeMs);
-          const keystrokes = totals.keystrokes - baseline.keystrokes;
-          const correct = totals.correctChars - baseline.correctChars;
-          const scored = totals.scoredChars - baseline.scoredChars;
-          const errors = totals.errors - baseline.errors;
+          const block = blockMetricsRef.current;
+          const durationMs = block.activeMs;
+          const keystrokes = block.keystrokes;
+          const correct = block.correctChars;
+          const scored = block.scoredChars;
+          const errors = block.errors;
 
           const completedIdx = idxRef.current;
           if (completedIdx !== null && keystrokes > 0) {

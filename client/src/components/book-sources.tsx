@@ -44,7 +44,7 @@ export function BookSources() {
 
       {adding && <AddSourceForm onDone={() => setAdding(false)} />}
 
-      <div className="grid gap-px bg-border sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2 lg:grid-cols-3">
         {isLoading ? (
           <div className="flex items-center gap-2 bg-card px-4 py-6 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -83,8 +83,8 @@ function SourceRow({ source }: { source: BookSource }) {
         className="min-w-0 flex-1"
         data-testid={`source-${source.id}`}
       >
-        <div className="flex items-center gap-1.5 text-sm text-foreground">
-          <span className="truncate">{source.label}</span>
+        <div className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
+          <span className="min-w-0 truncate">{source.label}</span>
           <ExternalLink className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />
         </div>
         <p className="mt-0.5 truncate text-xs text-muted-foreground">

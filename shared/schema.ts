@@ -328,6 +328,21 @@ export interface StatsSummary {
   };
   daily: { day: string; wpm: number; accuracyBp: number; minutes: number }[];
   recent: (Session & { bookTitle: string })[];
+  /**
+   * One row per book, rolled up across every session on it. A book practised
+   * over many short sittings reads as a single line of progress rather than a
+   * wall of near-identical session rows.
+   */
+  byBook: {
+    bookId: number;
+    bookTitle: string;
+    sessions: number;
+    wpm: number;
+    bestWpm: number;
+    accuracyBp: number;
+    minutes: number;
+    lastAt: number;
+  }[];
   worstKeys: { key: string; count: number }[];
   streak: number;
 }
