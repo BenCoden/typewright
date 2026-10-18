@@ -1,7 +1,8 @@
 {
-  "name": "rest-express",
+  "name": "typewright",
   "version": "1.0.0",
-  "license": "MIT",
+  "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "NODE_ENV=development tsx server/index.ts",
@@ -110,5 +111,9 @@
     "drizzle-kit": {
       "@esbuild-kit/esm-loader": "npm:tsx@^4.20.4"
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BenCoden/typewright.git"
   }
 }

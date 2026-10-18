@@ -2,11 +2,11 @@
 
 A local-first typing trainer for the books you already own. It reads EPUB, PDF, Markdown, HTML, and plain text, and turns each one into a typing session that keeps the book's structure intact:
 
-- **Prose** is normalised and split into sentence-sized runs
+- **Prose** is normalised and kept as whole paragraphs, exactly as the source lays them out
 - **Code listings** are typed verbatim — indentation, braces, and newlines included
 - **Figures** are extracted from the file, stored locally, and shown inline as you type past them
 
-Nothing leaves your machine. There is no account, no sync, and no outbound network call at runtime.
+Everything you import and type is stored locally. There is no account, no sync, and no telemetry. The only outbound requests are ones you start: importing a URL fetches that page, its figures, and any video poster frames.
 
 ## Quick start
 
@@ -35,7 +35,7 @@ npm run dev     # http://localhost:5000, Express + Vite on one port
 
 ## Importing
 
-Drag files onto the library page, or drop them in `./books` and click them in the **Watched folder** panel — that directory is mounted read-only into the container.
+Drag files onto the **Import** page (or tap **Choose files** on a phone), or drop them in `./books` and click them in the **Watched folder** panel — that directory is mounted read-only into the container.
 
 | Format | Prose | Code listings | Figures | Notes |
 | --- | --- | --- | --- | --- |
@@ -51,7 +51,7 @@ Scanned PDFs with no text layer are rejected with an explanation rather than imp
 
 ## Documentation sites and wikis
 
-Paste a link on the library page and Typewright types the article — not the site chrome. Navigation bars, cookie banners, "copy" buttons, edit links, and reference markers are dropped before anything reaches the page.
+Paste a link on the **Import** page and Typewright types the article — not the site chrome. Navigation bars, cookie banners, "copy" buttons, edit links, and reference markers are dropped before anything reaches the page.
 
 One page is imported at a time, but its table of contents comes with it. Every entry in that TOC is reachable from the keyboard, and an entry you have not read yet is fetched the moment you open it. Pasting one link therefore gives you the whole doc set without downloading it.
 
@@ -75,6 +75,10 @@ Typewright picks a route per site, best first:
 Figures come across on all of these; the OpenStax adapter follows the archive's content-addressed resource URLs, and the mime type is read from the response header rather than guessed from an extension, so images without one still store correctly.
 
 Microsoft Learn is worth calling out: the page you see in a browser is a JavaScript shell with no code in it at all. Typewright reads the Markdown source instead, which is why C# listings come through with their indentation intact.
+
+### Import safety
+
+URL import runs on the server, so every fetch is treated as untrusted. The host is resolved before the request goes out and rejected if it points at loopback, a private or link-local range (including cloud metadata addresses), or carrier-grade NAT. Redirects are followed one hop at a time and each hop is re-checked. Embedded media is kept only when its source is `http` or `https`.
 
 ### Media and links
 
@@ -110,7 +114,7 @@ The comparison is against the text Typewright extracted, not the raw HTML, so an
 
 ### Where to get books
 
-The library page has a small **Where to get books** panel with a set of well-known DRM-free stores and free-text archives pre-pinned: Project Gutenberg, Standard Ebooks, eBooks.com, Smashwords, Leanpub, Humble Bundle, StoryBundle, Manning, Open Library, Unglue.it, DigiLibraries, OpenStax, Internet Sacred Text Archive, plus links out to Entertrained's own list and the Guide to DRM-Free Living. Pins are pins — clicking opens the site in a new tab — and any pin can be removed. Adding a new one takes a name and a URL, with an optional note.
+The **Import** page has a small **Where to get books** panel with a set of well-known DRM-free stores and free-text archives pre-pinned: Project Gutenberg, Standard Ebooks, eBooks.com, Smashwords, Leanpub, Humble Bundle, StoryBundle, Manning, Open Library, Unglue.it, DigiLibraries, OpenStax, Internet Sacred Text Archive, plus links out to Entertrained's own list and the Guide to DRM-Free Living. Pins are pins — clicking opens the site in a new tab — and any pin can be removed. Adding a new one takes a name and a URL, with an optional note.
 
 ### Wrong keys are shown
 
@@ -171,6 +175,20 @@ Ligatures are switched off everywhere text is typed. A monospace font that draws
 | `Space` | Scroll normally |
 | `Enter` | Start typing from here |
 
+### How accuracy is scored
+
+Accuracy is per character, not per keystroke:
+
+- Each character can earn **one** bad mark. Missing the same letter four times before landing it costs one error, not four.
+- Fixing a mistake, or backspacing over it, keeps the mark. Restarting the whole block (`Ctrl+Backspace`) is the only reset.
+- The denominator is characters resolved, so retries do not inflate it.
+
+A block counts as finished when the cursor reaches the end, even with a mistake left standing. **Block** mistake mode still holds the cursor on a wrong key if you want zero-error runs.
+
+### Per-block results
+
+Finishing a block shows a small `wpm` / `accuracy` chip under it, and a block you jump past is struck through with a **Skipped** chip. Both are saved per block, so they are still there after leaving the book, reloading, or switching pages. The **Progress** page rolls everything up by book: average and best speed, accuracy, minutes, and session count.
+
 ### Typing settings
 
 | Setting | Options | Notes |
@@ -193,7 +211,7 @@ Reading mode has its own text size and line height, separate from the typing pro
 
 ```
 data/
-  typewright.db        SQLite: books, blocks, sessions, settings
+  typewright.db        SQLite: books, blocks, sessions, per-block progress, settings
   typewright.db-wal    write-ahead log
   assets/<bookId>/     figures extracted from that book
 ```
@@ -204,7 +222,8 @@ Back up `./data` and you have backed up everything. Delete it and the app starts
 
 ```
 shared/schema.ts     Data model shared by client and server
-server/import.ts     File -> ordered blocks. Format parsers, normalisation, segmentation
+server/import.ts     File -> ordered blocks. Format parsers and normalisation
+server/web-import.ts URL -> ordered blocks. Site adapters and the guarded fetcher
 server/storage.ts    SQLite access, schema creation, statistics
 server/routes.ts     JSON API
 client/src/lib/typing.ts        Typing engine — pure functions, no React
@@ -239,10 +258,18 @@ Long books stay responsive because the typing view only ever holds a 60-block wi
 | `GET` | `/api/library` | Files in the watched folder |
 | `POST` | `/api/library/import` | Import from the watched folder |
 | `GET` | `/api/assets/:id` | An extracted figure |
+| `GET`/`POST` | `/api/books/:id/progress` | Per-block typed and skipped results |
+| `GET`/`POST`/`DELETE` | `/api/book-sources` | Pinned book stores on the Import page |
 | `POST` | `/api/sessions` | Record a session |
-| `GET` | `/api/stats` | Aggregates, daily series, worst keys |
+| `GET` | `/api/stats` | Aggregates, daily series, worst keys, per-book rollup |
 | `GET`/`PATCH` | `/api/settings` | Preferences |
 
-## Licence
+## Contributing
 
-Yours. The books you import stay yours too — they never leave the machine.
+Pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, the checks a PR must pass, and what makes a change easy to review. Report security issues privately — see [SECURITY.md](SECURITY.md).
+
+## License
+
+Typewright is licensed under the [Apache License 2.0](LICENSE). Contributions are accepted under the same license.
+
+The books you import are not part of this project and stay yours.
