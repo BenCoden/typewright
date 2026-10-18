@@ -22,7 +22,21 @@ import type { ImportResult } from '@shared/schema';
  * from the dedicated import page or from anywhere else without duplication.
  */
 
-const ACCEPT = '.epub,.pdf,.txt,.md,.markdown,.html,.htm';
+/*
+ * Extensions plus MIME types. Desktop browsers match on extension, but mobile
+ * pickers (iOS Files, Android document providers) match on type, so listing
+ * only extensions can leave every book greyed out or the picker refusing to
+ * open. The server re-checks the extension either way.
+ */
+const ACCEPT = [
+  '.epub', 'application/epub+zip',
+  '.pdf', 'application/pdf',
+  '.txt', 'text/plain',
+  '.md', '.markdown', 'text/markdown', 'text/x-markdown',
+  '.html', '.htm', 'text/html',
+].join(',');
+
+const FILE_INPUT_ID = 'typewright-file-input';
 
 const ADAPTER_LABEL: Record<string, string> = {
   'git-markdown': 'Markdown source',
@@ -224,25 +238,43 @@ export function ImportPanel({ heading }: { heading?: React.ReactNode }) {
         ) : (
           <>
             <Upload className="mx-auto h-7 w-7 text-muted-foreground" />
-            <p className="mt-3 text-sm text-foreground">Drop books here</p>
+            <p className="mt-3 text-sm text-foreground">
+              <span className="hidden md:inline">Drop books here</span>
+              <span className="md:hidden">Add books from your device</span>
+            </p>
             <p className="mt-1 text-xs text-muted-foreground">
               EPUB keeps code indentation and figure captions — prefer it over PDF when you have both
             </p>
-            <button
-              type="button"
-              onClick={() => inputRef.current?.click()}
-              className="mt-4 inline-flex items-center gap-2 rounded-md border border-primary-border bg-primary px-4 py-2 text-sm text-primary-foreground hover-elevate active-elevate-2"
+            {/*
+              A <label> bound to the input opens the picker through a native tap.
+              Mobile Safari and in-app web views can ignore a scripted .click()
+              on a display:none input, so the input stays in the layout
+              (visually hidden) and the label does the opening. Enter/Space
+              keep it keyboard-operable.
+            */}
+            <label
+              htmlFor={FILE_INPUT_ID}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  inputRef.current?.click();
+                }
+              }}
+              className="mt-4 inline-flex cursor-pointer items-center gap-2 rounded-md border border-primary-border bg-primary px-4 py-2 text-sm text-primary-foreground hover-elevate active-elevate-2"
               data-testid="button-choose-files"
             >
               <Upload className="h-4 w-4" />
               Choose files
-            </button>
+            </label>
             <input
+              id={FILE_INPUT_ID}
               ref={inputRef}
               type="file"
               multiple
               accept={ACCEPT}
-              className="hidden"
+              className="sr-only"
               onChange={(e) => {
                 const files = [...(e.target.files ?? [])];
                 if (files.length) importFiles.mutate(files);
